@@ -7,6 +7,7 @@ runs from code that cannot be traced to a commit.
 
 from __future__ import annotations
 
+import functools
 import importlib.metadata
 import json
 import platform
@@ -77,10 +78,18 @@ def repo_root() -> Path | None:
     return root if (root / "pyproject.toml").is_file() else None
 
 
-def repo_state() -> dict[str, Any]:
-    """State of the experiments repository (needs an editable install)."""
+@functools.cache
+def _repo_state() -> dict[str, Any]:
     package_dir = Path(oas_experiments.__file__).resolve().parent
     return git_state(package_dir, "src/oas_experiments/__init__.py")
+
+
+def repo_state() -> dict[str, Any]:
+    """State of the experiments repository (needs an editable install).
+
+    Determined once per process: a run records the state it started from.
+    """
+    return dict(_repo_state())
 
 
 def asf_state() -> dict[str, Any]:
@@ -89,7 +98,13 @@ def asf_state() -> dict[str, Any]:
     ``git``: ASF is imported from a checkout; dirty covers tracked changes and
     untracked files under ``asf/``. ``direct_url``: ASF was pip-installed from
     a git URL pinned to a commit; dirty is ``None``. Otherwise ``unknown``.
+    Determined once per process.
     """
+    return dict(_asf_state())
+
+
+@functools.cache
+def _asf_state() -> dict[str, Any]:
     import asf
 
     state = git_state(Path(asf.__file__).resolve().parent, "asf/__init__.py", "asf")
