@@ -41,8 +41,8 @@ pip install -e ".[dev]"           # installs ASF at the pinned commit
 pip install -e "../asf[online]"   # then replaces it with your local clone
 ```
 
-The order matters: `pip install -e .` always (re)installs the pinned ASF, so
-run the last line again after it. Every result records which ASF commit was
+The order matters: `pip install -e .` installs the pinned ASF and can replace
+your local clone, so repeat the last line after it. Every result records which ASF commit was
 imported and whether the checkout was dirty.
 
 For final runs, skip the last line; see [Final runs](#final-runs).
