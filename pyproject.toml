@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "oas-experiments"
+version = "0.1.0"
+description = "Experiments for the master thesis 'Online Algorithm Selection for Instance Streams under Data Drift'"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  # ASF is pinned by commit hash. `--final` runs refuse to start unless the
+  # imported ASF is at exactly this commit (see README, "Final runs").
+  # For development, install the local clone on top: pip install -e ../asf
+  "asf[online] @ git+https://github.com/BrianSchiller/asf@3083aa077920e8dbc0c06526534fb2a147678cc3",
+  "numpy",
+  "pandas",
+  "pyyaml",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "ruff", "pyarrow"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["tests"]
+
+[tool.ruff]
+src = ["src", "tests"]
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "ANN"]
+ignore = ["ANN401"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["ANN"]
