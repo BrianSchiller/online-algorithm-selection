@@ -1,0 +1,64 @@
+# Example experiment: three methods on a synthetic stream with one sudden
+# covariate drift, under a warm and a cold protocol, 3 selector seeds each.
+#
+#   python -m oas_experiments.list configs/example_synthetic_sudden.yaml
+#   python -m oas_experiments.run  configs/example_synthetic_sudden.yaml --run-id <id>
+name: example_synthetic_sudden          # results/<name>/<run_id>/
+
+evaluation:
+  par_factor: 10.0
+  result_mode: best_of_scheduled        # user gets the best scheduled run; all runs count as compute
+
+seeds: [0, 1, 2]                        # selector seeds -> random_state of the selector
+
+protocols:
+  - {name: warm100, type: warm, n_warmstart: 100}
+  - {name: cold, type: cold}
+
+streams:
+  - name: sudden
+    kind: synthetic_scenario            # asf.online.streams.make_synthetic_scenario
+    seeds: [0]                          # stream seeds -> random_state of the generator
+    params:
+      kind: sudden_covariate
+      n_instances: 400
+      n_features: 3
+      n_algorithms: 3
+      breakpoints: [250]                # step 150 under warm100, step 250 under cold
+      shift_strength: 3.0
+      cutoff: 100.0
+      feature_noise: 0.3
+      performance_noise: 0.1
+
+methods:
+  - name: static-pairwise
+    protocols: [warm100]                # offline baseline: warm only
+    selector:
+      class: asf.online.selectors.StaticOnlineSelector
+      params:
+        selector:                       # {class, params} -> an instance
+          class: asf.selectors.PairwiseClassifier
+          params:
+            model_class: {type: sklearn.tree.DecisionTreeClassifier}
+            random_state: "${seed}"
+
+  - name: rook-pairwise                 # no `protocols` key = all protocols
+    selector:
+      class: asf.online.selectors.OnlinePairwiseSelector
+      params:
+        variant: paper
+        n_additional: 1
+        reference_period: 100           # used under cold only; ASF default is 500
+        model_class: {type: sklearn.tree.DecisionTreeClassifier}   # {type} -> the class itself
+        detector:
+          class: asf.online.drift.pca_reconstruction.PCAReconstructionDetector
+          params: {chunk_size: 50}
+
+  - name: ds-ts
+    selector:
+      class: asf.online.selectors.DiscountedTSSelector
+      params:
+        gamma: 0.99
+        noise_var: 1.0
+        c: 1.0
+        budget: "${stream.cutoff}"        # reward scale of the warm start = the stream's cutoff
