@@ -1,0 +1,34 @@
+# Config behind the fixture results in tests/fixtures/results/fixture_exp.
+# Regenerate them with: python tests/fixtures/make_fixtures.py
+name: fixture_exp
+seeds: [0, 1]
+protocols:
+  - {name: warm10, type: warm, n_warmstart: 10}
+  - {name: cold, type: cold}
+streams:
+  - name: sudden
+    kind: synthetic_scenario
+    seeds: [0]
+    params: {kind: sudden_covariate, n_instances: 40, breakpoints: [25], min_segment_length: 10, cutoff: 100.0}
+methods:
+  - name: static
+    protocols: [warm10]
+    selector:
+      class: asf.online.selectors.StaticOnlineSelector
+      params:
+        selector:
+          class: asf.selectors.PairwiseClassifier
+          params: {model_class: {type: sklearn.tree.DecisionTreeClassifier}, random_state: "${seed}"}
+  - name: rook
+    selector:
+      class: asf.online.selectors.OnlinePairwiseSelector
+      params:
+        n_additional: 1
+        reference_period: 10
+        detector:
+          class: asf.online.drift.pca_reconstruction.PCAReconstructionDetector
+          params: {chunk_size: 5}
+  - name: ds-ts
+    selector:
+      class: asf.online.selectors.DiscountedTSSelector
+      params: {gamma: 0.95, budget: "${stream.cutoff}"}

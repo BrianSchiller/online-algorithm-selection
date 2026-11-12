@@ -1,0 +1,113 @@
+{
+  "schema_version": 1,
+  "asf": {
+    "version": "0.1.8",
+    "commit": "0000000000000000000000000000000000000000",
+    "dirty": false,
+    "commit_source": "git"
+  },
+  "selector": {
+    "class": "asf.online.selectors.OnlinePairwiseSelector",
+    "params": {
+      "random_state": 0
+    }
+  },
+  "stream": {
+    "name": "sudden",
+    "seed": 0,
+    "n_instances": 40,
+    "n_evaluated": 30,
+    "cutoff": 100.0,
+    "algorithms": [
+      "a0",
+      "a1",
+      "a2"
+    ],
+    "n_features": 3,
+    "drift_points": [
+      15
+    ],
+    "transition_intervals": []
+  },
+  "protocol": "warm",
+  "n_warmstart": 10,
+  "seed": 0,
+  "result_mode": "best_of_scheduled",
+  "par_factor": 10.0,
+  "maximize": false,
+  "sbs_algorithm_stream": "a1",
+  "sbs_algorithm_warmstart": "a0",
+  "retrain_steps": [
+    19
+  ],
+  "drift_steps": [
+    19
+  ],
+  "retrain_seconds": 0.25,
+  "created_utc": "2026-11-12T15:00:00Z",
+  "extra": {
+    "experiment": {
+      "name": "fixture_exp",
+      "run_id": "sudden-s0__warm10__rook__seed0",
+      "config_file": "fixture_exp.yaml",
+      "config_hash": "9691d82b364f96936acc7004cfd55ca6e8990a01d4b4f28c5818140b05e6869b"
+    },
+    "run": {
+      "experiment": "fixture_exp",
+      "run_id": "sudden-s0__warm10__rook__seed0",
+      "method": {
+        "name": "rook",
+        "selector": {
+          "class": "asf.online.selectors.OnlinePairwiseSelector",
+          "params": {
+            "n_additional": 1,
+            "reference_period": 10,
+            "detector": {
+              "class": "asf.online.drift.pca_reconstruction.PCAReconstructionDetector",
+              "params": {
+                "chunk_size": 5
+              }
+            }
+          }
+        }
+      },
+      "stream": {
+        "name": "sudden",
+        "kind": "synthetic_scenario",
+        "seed": 0,
+        "params": {
+          "kind": "sudden_covariate",
+          "n_instances": 40,
+          "breakpoints": [
+            25
+          ],
+          "min_segment_length": 10,
+          "cutoff": 100.0
+        },
+        "drift": null
+      },
+      "protocol": {
+        "name": "warm10",
+        "type": "warm",
+        "n_warmstart": 10
+      },
+      "seed": 0,
+      "evaluation": {
+        "par_factor": 10.0,
+        "result_mode": "best_of_scheduled"
+      }
+    },
+    "repo": {
+      "commit": "1111111111111111111111111111111111111111",
+      "dirty": false,
+      "commit_source": "git"
+    },
+    "asf_pinned_commit": "0000000000000000000000000000000000000000",
+    "final": false,
+    "environment": {
+      "python": "3.10.12",
+      "platform": "fixture",
+      "packages": {}
+    }
+  }
+}
