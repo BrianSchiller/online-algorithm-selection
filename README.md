@@ -165,11 +165,31 @@ skeleton.
 | --- | --- | --- |
 | `synthetic_scenario` | `asf.online.streams.make_synthetic_scenario(**params)` | `random_state` |
 | `synthetic` | `asf.online.streams.make_synthetic_stream` from `regimes`, `phases`, `performance_model`, `cutoff` and further keyword arguments | `random_state` |
+| `aslib` | one or more ASlib scenarios (`root`, `scenarios`), ordered by the `drift` block; without one, in random order | sampling and shuffling |
 
-Dataset-backed kinds (an ASlib scenario plus a drift construction) are added
-in `streams.py` with `@stream_kind("name")`. The `drift: {builder, params}`
-block of a stream entry is reserved for them and rejected by the synthetic
-kinds.
+The synthetic kinds reject a `drift` block. For `aslib` it chooses how the
+instances are ordered (see `configs/example_sat12_switching.yaml` and ASF's
+`docs/features/stream_construction.md`):
+
+```yaml
+- name: sat12-halves
+  kind: aslib
+  params:
+    root: ../../aslib_data          # relative to the working directory
+    scenarios: [SAT12-HAND, SAT12-INDU, SAT12-RAND]   # stacked; must share features, solvers, cutoff
+  drift:
+    builder: grouped                # play groups one after another
+    params:
+      labels: scenario              # or best_algorithm | {clusters: n} | {feature: <expr>, quantiles: n}
+      schedule: [SAT12-HAND, SAT12-INDU, SAT12-RAND, SAT12-HAND, SAT12-INDU, SAT12-RAND]
+      # segment_length: 300         # default: all instances, each group split evenly over its entries
+      # transition_length: 100      # default 0 = sudden; a list entry [A, B] mixes groups
+```
+
+`builder: sorted` orders by `key: {feature: <column or expression>}` (e.g.
+`nclauses / nvars`) or `key: {runtime: [algorithms] | all, agg: max}`, with
+optional `ascending` and `jitter`. Clusters are always computed with seed 0,
+so a cluster id means the same cluster for every stream seed.
 
 ## What a result contains
 

@@ -1,0 +1,61 @@
+# Example experiment: SAT12-HAND, -INDU and -RAND (same 115 features, 31 solvers,
+# cutoff 1200) played as half of each, then the other halves (recurring drift),
+# plus a stream sorted by the clause-to-variable ratio (incremental drift).
+#
+#   python -m oas_experiments.list configs/example_sat12_switching.yaml
+#   python -m oas_experiments.run  configs/example_sat12_switching.yaml --run-id <id>
+name: example_sat12_switching
+
+evaluation:
+  par_factor: 10.0
+  result_mode: best_of_scheduled
+
+seeds: [0]
+
+protocols:
+  - {name: warm200, type: warm, n_warmstart: 200}
+  - {name: cold, type: cold}
+
+streams:
+  - name: sat12-halves
+    kind: aslib
+    seeds: [0, 1]
+    params:
+      root: ../../aslib_data              # relative to where you run the command
+      scenarios: [SAT12-HAND, SAT12-INDU, SAT12-RAND]
+    drift:
+      builder: grouped
+      params:
+        labels: scenario                  # or best_algorithm, {clusters: 4}, {feature: <expr>, quantiles: 4}
+        schedule: [SAT12-HAND, SAT12-INDU, SAT12-RAND, SAT12-HAND, SAT12-INDU, SAT12-RAND]
+        # segment_length: 300             # default: every instance, groups split evenly
+        # transition_length: 100          # default 0 = sudden switches
+
+  - name: sat12-ratio
+    kind: aslib
+    seeds: [0]
+    params:
+      root: ../../aslib_data
+      scenarios: [SAT12-HAND, SAT12-INDU, SAT12-RAND]
+    drift:
+      builder: sorted
+      params:
+        key: {feature: vars_clauses_ratio}  # or an expression, or {runtime: [algos] | all, agg: max}
+        jitter: 0.05
+
+methods:
+  - name: rook-pairwise
+    selector:
+      class: asf.online.selectors.OnlinePairwiseSelector
+      params:
+        variant: paper
+        n_additional: 1
+        reference_period: 200
+        model_class: {type: sklearn.tree.DecisionTreeClassifier}
+
+  - name: ds-ts
+    selector:
+      class: asf.online.selectors.DiscountedTSSelector
+      params:
+        gamma: 0.99
+        budget: "${stream.cutoff}"
