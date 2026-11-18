@@ -1,6 +1,7 @@
-"""Aggregate metrics, statistics, plots and tables.
+"""Metrics, statistics, plots and tables.
 
-Empty on purpose: filled by work packages D2 and D3. Start from
-``oas_experiments.results.load_experiment``, which returns one tidy frame per
-run and one long per-step frame.
+``metrics`` (D2) turns the frames of ``oas_experiments.results.load_experiment``
+into per-step metrics, drift metrics, a run table, aggregates over seeds and
+curves; ``stats`` compares methods (ranks, Friedman, Wilcoxon with Holm). See
+the README, section "Metrics".
 """
