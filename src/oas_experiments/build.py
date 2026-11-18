@@ -1,11 +1,14 @@
 """Turn the ``selector`` block of a config into a Python object.
 
-Three forms are understood anywhere inside ``params``:
+Four forms are understood anywhere inside ``params``:
 
 ``{class: pkg.mod.Name, params: {...}}``
     an instance, ``Name(**params)``, with the params built recursively;
 ``{type: pkg.mod.Name}``
     the class or function itself (e.g. ``model_class``);
+``{type: pkg.mod.Name, params: {...}}``
+    the class with preset arguments, ``functools.partial(Name, **params)``
+    (e.g. a ``model_class`` with ``n_estimators: 50``);
 ``"${seed}"`` / ``"${stream.cutoff}"``
     the selector seed of the run / the cutoff of the built stream.
 
@@ -14,6 +17,7 @@ Everything else is passed through unchanged.
 
 from __future__ import annotations
 
+import functools
 import importlib
 import re
 from typing import TYPE_CHECKING, Any
@@ -70,7 +74,7 @@ def resolve_placeholders(value: Any, context: dict[str, Any]) -> Any:
 
 
 def build(spec: Any) -> Any:
-    """Recursively build ``{class, params}`` and ``{type}`` blocks."""
+    """Recursively build ``{class, params}``, ``{type}`` and ``{type, params}``."""
     if isinstance(spec, list):
         return [build(item) for item in spec]
     if not isinstance(spec, dict):
@@ -89,6 +93,11 @@ def build(spec: Any) -> Any:
             raise BuildError(f"Cannot construct {spec['class']}: {exc}") from exc
     if set(spec) == {"type"}:
         return import_object(spec["type"])
+    if set(spec) == {"type", "params"}:
+        params = build(spec["params"] or {})
+        if not isinstance(params, dict):
+            raise BuildError(f"{{type, params}}: params must be a mapping: {spec!r}")
+        return functools.partial(import_object(spec["type"]), **params)
     return {key: build(item) for key, item in spec.items()}
 
 

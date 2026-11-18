@@ -8,11 +8,30 @@ import math
 import pandas as pd
 import pyarrow.parquet as pq
 import pytest
+from asf.online.evaluation import STEP_COLUMNS
 
 from conftest import FIXTURE_RESULTS
 from oas_experiments.config import load_config
-from support.schema_v1 import META_KEYS, STEP_COLUMNS
 
+META_KEYS = {
+    "schema_version",
+    "asf",
+    "selector",
+    "stream",
+    "protocol",
+    "n_warmstart",
+    "seed",
+    "result_mode",
+    "par_factor",
+    "maximize",
+    "sbs_algorithm_stream",
+    "sbs_algorithm_warmstart",
+    "retrain_steps",
+    "drift_steps",
+    "retrain_seconds",
+    "created_utc",
+    "extra",
+}
 FIXTURE_CONFIG = load_config(FIXTURE_RESULTS.parent / "fixture_exp.yaml")
 RUN_DIRS = sorted((FIXTURE_RESULTS / "fixture_exp").iterdir())
 PARQUET_TYPES = {

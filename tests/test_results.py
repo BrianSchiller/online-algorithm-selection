@@ -5,6 +5,7 @@ import shutil
 
 import numpy as np
 import pytest
+from asf.online.evaluation import STEP_COLUMNS
 
 from conftest import FIXTURE_RESULTS
 from oas_experiments.results import (
@@ -15,12 +16,9 @@ from oas_experiments.results import (
     flatten_params,
     load_experiment,
 )
-from support.schema_v1 import STEP_COLUMNS
 
 EXPERIMENT = FIXTURE_RESULTS / "fixture_exp"
 RUN = "sudden-s0__cold__rook__seed0"
-
-pytestmark = pytest.mark.usefixtures("stand_in_f1")
 
 
 @pytest.fixture
@@ -39,6 +37,7 @@ def test_runs_frame_has_one_row_per_run_with_config_columns():
     assert len(runs) == 10
     assert runs["run_id"].is_unique
     assert set(runs["experiment"]) == {"fixture_exp"}
+    assert (runs["method_family"] == runs["method"]).all()  # nothing swept
     counts = runs.groupby(["method", "protocol_type"]).size().to_dict()
     assert counts == {
         ("ds-ts", "cold"): 2,

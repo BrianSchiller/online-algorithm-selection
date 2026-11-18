@@ -1,31 +1,19 @@
-"""End to end: every run of the example config, then load the experiment.
-
-``test_example_config_end_to_end`` needs ASF with the F1 interfaces
-(``OnlineResult.save`` / ``load``) and is skipped until they are installed.
-Until then ``test_example_config_with_stand_in`` runs the same flow with the
-schema-v1 stand-in around today's evaluator.
-"""
+"""End to end: every run of the example config, then load the experiment."""
 
 from __future__ import annotations
 
 import time
 
-import pytest
+from asf.online.evaluation import STEP_COLUMNS
 
 from conftest import EXAMPLE_CONFIG, FIXTURE_RESULTS
 from oas_experiments import io, run
 from oas_experiments import list as list_cli
 from oas_experiments.config import load_config
 from oas_experiments.results import load_experiment
-from support.schema_v1 import STEP_COLUMNS
-
-needs_f1 = pytest.mark.skipif(
-    not io.asf_supports_results(),
-    reason="ASF has no OnlineResult.save/load yet (F1 not merged)",
-)
 
 
-def _run_example_and_check(tmp_path, capsys) -> None:
+def test_example_config_end_to_end(tmp_path, capsys):
     started = time.perf_counter()
     root = tmp_path / "results"
     config = load_config(EXAMPLE_CONFIG)
@@ -71,16 +59,6 @@ def _run_example_and_check(tmp_path, capsys) -> None:
     assert time.perf_counter() - started < 60, "the end-to-end test must stay fast"
 
 
-@needs_f1
-def test_example_config_end_to_end(tmp_path, capsys):
-    _run_example_and_check(tmp_path, capsys)
-
-
-def test_example_config_with_stand_in(stand_in_f1, tmp_path, capsys):
-    _run_example_and_check(tmp_path, capsys)
-
-
-@needs_f1
 def test_real_asf_reads_the_agreed_fixtures():
     """The hand-made schema-v1 fixtures must load with the real OnlineResult."""
     results = load_experiment(FIXTURE_RESULTS / "fixture_exp")

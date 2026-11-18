@@ -152,3 +152,70 @@ def test_example_config_expands_to_15_runs():
         "ds-ts": {"warm", "cold"},
     }
     assert {run.seed for run in cfg.runs} == {0, 1, 2}
+
+
+def _swept(minimal_config, sweep):
+    method = minimal_config["methods"][1]
+    method["sweep"] = sweep
+    return parse_config(minimal_config)
+
+
+def test_sweep_expands_one_method_per_value(minimal_config):
+    config = _swept(minimal_config, {"gamma": [0.9, 0.99]})
+    runs = [r for r in config.runs if r.family == "ds-ts"]
+    assert sorted({r.method for r in runs}) == ["ds-ts-gamma0.9", "ds-ts-gamma0.99"]
+    run = config.get("sudden-s0__cold__ds-ts-gamma0.9__seed1")
+    assert run.selector["params"] == {"gamma": 0.9, "budget": "${stream.cutoff}"}
+    assert run.to_dict()["method"] == {
+        "name": "ds-ts-gamma0.9",
+        "selector": run.selector,
+        "family": "ds-ts",
+        "sweep": {"gamma": 0.9},
+    }
+    unswept = config.get("sudden-s0__warm20__static__seed0")
+    assert set(unswept.to_dict()["method"]) == {"name", "selector"}
+    assert len(config.runs) == 2 + 2 * 2 * 2  # static: warm only
+
+
+def test_sweep_over_nested_paths_is_a_product(minimal_config):
+    minimal_config["methods"][1]["selector"]["params"]["gate"] = {
+        "class": "asf.online.gate.UncertaintyGate",
+        "params": {"rate": 0.1},
+    }
+    config = _swept(
+        minimal_config, {"gate.params.rate": [0.1, 0.5], "gate.params.n": [1, None]}
+    )
+    names = sorted({r.method for r in config.runs if r.family == "ds-ts"})
+    assert names == [
+        "ds-ts-rate0.1-n1",
+        "ds-ts-rate0.1-nNone",
+        "ds-ts-rate0.5-n1",
+        "ds-ts-rate0.5-nNone",
+    ]
+    run = config.get("sudden-s0__cold__ds-ts-rate0.5-nNone__seed0")
+    assert run.selector["params"]["gate"]["params"] == {"rate": 0.5, "n": None}
+    other = config.get("sudden-s0__cold__ds-ts-rate0.1-n1__seed0")
+    assert other.selector["params"]["gate"]["params"] == {"rate": 0.1, "n": 1}
+
+
+@pytest.mark.parametrize(
+    ("sweep", "message"),
+    [
+        ({}, "non-empty mapping"),
+        ({"gamma": 0.9}, "non-empty list"),
+        ({"gamma": []}, "non-empty list"),
+        ({"gamma": [{"a": 1}]}, "plain values"),
+        ({"gamma": [0.9, 0.9]}, "duplicates"),
+        ({"gate.params.rate": [0.1]}, "does not lead to a mapping"),
+        ({"gamma": ["a b"]}, "generated name"),
+    ],
+)
+def test_bad_sweeps_are_rejected(minimal_config, sweep, message):
+    with pytest.raises(ConfigError, match=message):
+        _swept(minimal_config, sweep)
+
+
+def test_swept_name_clashing_with_a_method_is_rejected(minimal_config):
+    minimal_config["methods"][0]["name"] = "ds-ts-gamma0.9"
+    with pytest.raises(ConfigError, match="duplicates"):
+        _swept(minimal_config, {"gamma": [0.9]})

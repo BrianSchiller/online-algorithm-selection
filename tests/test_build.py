@@ -118,3 +118,13 @@ def test_synthetic_streams_reject_a_drift_block(minimal_config):
     minimal_config["streams"][0]["drift"] = {"builder": "abrupt_drift"}
     with pytest.raises(ValueError, match="remove the `drift` block"):
         build_stream(parse_config(minimal_config).runs[0])
+
+
+def test_type_with_params_is_a_partial():
+    from sklearn.ensemble import RandomForestClassifier
+
+    spec = {"type": "sklearn.ensemble.RandomForestClassifier"}
+    factory = build({**spec, "params": {"n_estimators": 7}})
+    model = factory(random_state=0)
+    assert isinstance(model, RandomForestClassifier)
+    assert (model.n_estimators, model.random_state) == (7, 0)

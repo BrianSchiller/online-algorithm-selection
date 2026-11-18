@@ -2,11 +2,12 @@
 
     python tests/fixtures/make_fixtures.py
 
-These directories follow OnlineResult schema v1 exactly and stand in for real
-results until ASF can write them (work package F1). They are synthetic: the
-numbers are drawn from a seeded generator, not produced by a selector, but
-they are internally consistent (costs follow from the runs, the VBS and SBS
-columns from the hidden runtimes). The script is deterministic.
+These directories follow OnlineResult schema v1 and are written with ASF's
+``OnlineResult.save``. They are synthetic: the numbers are drawn from a seeded
+generator, not produced by a selector, so tests can rely on fixed values. They
+are internally consistent (costs follow from the runs, the VBS and SBS columns
+from the hidden runtimes). Apart from ``created_utc`` the script is
+deterministic.
 """
 
 from __future__ import annotations
@@ -22,8 +23,9 @@ import pandas as pd
 HERE = Path(__file__).resolve().parent
 sys.path[:0] = [str(HERE.parent), str(HERE.parents[1] / "src")]
 
+from asf.online.evaluation import OnlineResult  # noqa: E402
+
 from oas_experiments.config import RunSpec, load_config  # noqa: E402
-from support.schema_v1 import StandInOnlineResult, make_meta  # noqa: E402
 
 ALGORITHMS = ["a0", "a1", "a2"]
 CUTOFF, PAR_FACTOR, N_INSTANCES, DRIFT_POINT = 100.0, 10.0, 40, 25
@@ -45,9 +47,7 @@ def _truth() -> pd.DataFrame:
     return pd.DataFrame(runtimes, index=index, columns=ALGORITHMS)
 
 
-def make_result(
-    run: RunSpec, truth: pd.DataFrame, config_hash: str
-) -> StandInOnlineResult:
+def make_result(run: RunSpec, truth: pd.DataFrame, config_hash: str) -> OnlineResult:
     seed = sum(map(ord, run.run_id))  # stable across processes, unlike hash()
     rng = np.random.default_rng(seed)
     warm, tail = truth.iloc[: run.n_warmstart], truth.iloc[run.n_warmstart :]
@@ -123,9 +123,15 @@ def make_result(
                 "detector_seconds": float(rng.uniform(1e-5, 1e-4)) if two_runs else 0.0,
             }
         )
-    meta = make_meta(
-        selector_class=run.selector["class"],
-        selector_params={"random_state": run.seed},
+    meta = dict(
+        asf={
+            "version": "0.1.8",
+            "commit": "0" * 40,
+            "dirty": False,
+            "commit_source": "git",
+        },
+        selector={"class": run.selector["class"], "params": {"random_state": run.seed}},
+        protocol="warm" if run.n_warmstart else "cold",
         stream={
             "name": run.stream,
             "seed": run.stream_seed,
@@ -143,9 +149,6 @@ def make_result(
         par_factor=run.par_factor,
         sbs_algorithm_stream=str(sbs_stream),
         sbs_algorithm_warmstart=sbs_warm,
-        retrain_steps=[drift_step] if two_runs else [],
-        drift_steps=[drift_step] if two_runs else [],
-        retrain_seconds=0.25 if two_runs else 0.0,
         extra={
             "experiment": {
                 "name": run.experiment,
@@ -160,7 +163,14 @@ def make_result(
             "environment": {"python": "3.10.12", "platform": "fixture", "packages": {}},
         },
     )
-    return StandInOnlineResult(pd.DataFrame(rows), meta)
+    return OnlineResult(
+        steps=pd.DataFrame(rows),
+        retrain_steps=[drift_step] if two_runs else [],
+        drift_steps=[drift_step] if two_runs else [],
+        retrain_seconds=0.25 if two_runs else 0.0,
+        drift_points=(DRIFT_POINT - run.n_warmstart,),
+        meta=meta,
+    )
 
 
 def main() -> None:

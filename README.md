@@ -20,11 +20,13 @@ src/oas_experiments/
   streams.py                stream kinds -> asf InstanceStream
   provenance.py             commit + dirty flag of this repo and ASF, --final checks
   io.py                     result paths; the only caller of OnlineResult.save/load
-  run.py                    python -m oas_experiments.run   (one run)
-  list.py                   python -m oas_experiments.list  (run ids of a config)
+  run.py                    python -m oas_experiments.run    (one run)
+  list.py                   python -m oas_experiments.list   (run ids of a config)
+  launch.py                 python -m oas_experiments.launch (all missing runs, in parallel)
   results.py                load an experiment into DataFrames
   datasets/                 placeholder: dataset preparation (bin packing, SATCOMP)
   analysis/                 placeholder: metrics, statistics, plots
+scripts/                    SLURM job array (submit.sh, slurm_array.sh)
 tests/                      tests, schema-v1 fixture results
 results/                    <experiment>/<run id>/{meta.json, steps.parquet}  (not versioned)
 ```
@@ -55,19 +57,30 @@ For final runs, skip the last line; see [Final runs](#final-runs).
    ```
    python -m oas_experiments.list configs/example_synthetic_sudden.yaml
    ```
-3. **Run them**, one process per run:
+3. **Run them**, one process per run. A single run:
    ```
    python -m oas_experiments.run configs/example_synthetic_sudden.yaml --run-id sudden-s0__cold__ds-ts__seed0
    ```
+   or every run without a result, several at a time (on a laptop or
+   workstation; see [On a cluster](#on-a-cluster) for SLURM):
+   ```
+   python -m oas_experiments.launch configs/example_synthetic_sudden.yaml --jobs 8
+   python -m oas_experiments.launch configs/example_synthetic_sudden.yaml --jobs 8 --match "*__cold__*"
+   ```
    The result goes to `results/<experiment>/<run id>/`. Use `--results-dir`
    or the environment variable `OAS_RESULTS_DIR` for another location.
+   `launch` writes the output of each run to
+   `results/_logs/<experiment>/<run id>.log`, limits numerical libraries to
+   one thread per run, lists failed runs at the end and only starts runs
+   without a result, so after a failure you simply launch again.
+   `--dry-run` prints what would start.
 4. **Load the results**:
    ```python
    from oas_experiments.results import load_experiment
 
    results = load_experiment("results/example_synthetic_sudden")
-   results.runs    # one row per run
-   results.steps   # one row per run and step
+   results.runs  # one row per run
+   results.steps  # one row per run and step
    ```
 
 ### Re-running
@@ -83,20 +96,24 @@ For final runs, skip the last line; see [Final runs](#final-runs).
 
 ### On a cluster
 
-Runs are independent, so an experiment is a job array. `--index N` runs the
-N-th line (0-based) of `oas_experiments.list`:
+Runs are independent, so an experiment is a SLURM job array: task `N` runs
+the N-th line (0-based) of `oas_experiments.list` via `run --index N`.
 
 ```
-N=$(python -m oas_experiments.list configs/my_experiment.yaml --count)
-sbatch --array=0-$((N-1)) job.sh
-
-# job.sh
-python -m oas_experiments.run configs/my_experiment.yaml --index "$SLURM_ARRAY_TASK_ID" --final
+bash scripts/submit.sh configs/my_experiment.yaml            # pilot
+bash scripts/submit.sh configs/my_experiment.yaml --final    # thesis results
 ```
 
-`python -m oas_experiments.list <config> --missing` prints the run ids that
-have no result yet, to resubmit failed jobs with `--run-id`. The index always
-counts over all runs of the config, so it stays valid while results arrive.
+`submit.sh` activates `$OAS_VENV` (default `.venv`), counts the runs and
+submits `scripts/slurm_array.sh` as an array with at most `MAX_PARALLEL`
+(default 100) tasks at once; arguments after the config go to `run`. Adjust
+the `#SBATCH` lines (time, memory, account) in `slurm_array.sh` to the
+cluster. Task output goes to `logs/`.
+
+To redo failed tasks, submit again: tasks whose result exists finish
+immediately. `python -m oas_experiments.list <config> --missing` shows what
+is still missing. The index always counts over all runs of the config, so it
+stays valid while results arrive.
 
 ## Config format
 
@@ -149,15 +166,35 @@ give them `protocols: [<warm protocol>]`.
 | --- | --- |
 | `{class: pkg.mod.Name, params: {...}}` | an instance, `Name(**params)`, built recursively |
 | `{type: pkg.mod.Name}` | the class itself (for arguments like `model_class`) |
+| `{type: pkg.mod.Name, params: {...}}` | the class with preset arguments, `functools.partial(Name, **params)`, e.g. a `model_class` with `n_estimators: 50` |
 | `"${seed}"`, `"${stream.cutoff}"` | the run's selector seed, the stream's cutoff |
 
 The top-level selector always receives `random_state=<selector seed>`; do not
 set it yourself. Nested components that need a seed take `"${seed}"`.
 
-**Hyperparameters** are plain config values. To compare settings, list them as
-separately named methods (`ds-ts-g95`, `ds-ts-g99`); YAML anchors avoid
-repetition. A per-method sweep syntax is deliberately not part of this
-skeleton.
+**Hyperparameters** are plain config values. To compare settings, either list
+them as separately named methods (`ds-ts-g95`, `ds-ts-g99`; YAML anchors and
+`<<:` merge keys avoid repetition) or give the method a `sweep`:
+
+```yaml
+  - name: frugal-unc
+    sweep:
+      gate.params.rate: [0.1, 0.25, 0.5]   # dotted path inside selector.params
+    selector:
+      class: asf.online.selectors.FrugalPairwiseSelector
+      params:
+        gate:
+          class: asf.online.gate.UncertaintyGate
+          params: {rate: 0.25, random_state: "${seed}"}   # the value is replaced
+```
+
+This expands into the methods `frugal-unc-rate0.1`, `frugal-unc-rate0.25` and
+`frugal-unc-rate0.5` (name, last part of the path, value). Several paths give
+every combination (`-rate0.1-n2`, ...). The enclosing block of a path must be
+in the selector; the last key may be new. Swept runs store `family` and
+`sweep` in `meta.extra.run.method`, and `load_experiment` reports the family
+as `method_family` (the method name for runs without a sweep), so the points
+of a cost-versus-quality curve can be grouped.
 
 ### Stream kinds
 
@@ -243,10 +280,9 @@ python -m oas_experiments.run <config> --run-id <id> --final
 - the imported ASF has a known commit and no uncommitted changes, and
 - that commit is the one pinned in `pyproject.toml`.
 
-To move the pin, change the hash in the `asf[online] @ git+...@<hash>` line of
-`pyproject.toml` and commit. The pin currently points at the head of
-`online-selection` from before the F1 interfaces; **move it to the commit that
-contains them before the first final run.**
+To move the pin, push the ASF commit, change the hash in the
+`asf[online] @ git+...@<hash>` line of `pyproject.toml` and commit. The pin
+points at `online-selection` with all Phase 1 packages merged (`ae9fcb5`).
 
 ## Tests
 
@@ -256,13 +292,8 @@ ruff check . && ruff format --check .
 ```
 
 - `tests/fixtures/results/` holds small result directories that follow schema
-  v1 exactly. They are synthetic and generated by
+  v1. Their numbers are synthetic (so tests can rely on fixed values) and are
+  written with ASF's `OnlineResult.save` by
   `python tests/fixtures/make_fixtures.py`.
-- `tests/support/schema_v1.py` contains the schema as agreed with the F1 work
-  package and a stand-in for `OnlineResult` and `run_prequential`. Tests use
-  it so that they pass with an ASF that cannot save results yet.
-- `tests/test_e2e.py` runs all 15 runs of the example config and loads them
-  back, once with the stand-in and once with the real ASF. The real variant
-  and a check that ASF loads the fixtures are skipped while ASF lacks
-  `OnlineResult.save`. Once the F1 interfaces are merged and pinned, the
-  stand-in and its tests can be removed.
+- `tests/test_e2e.py` runs all 15 runs of the example config with the
+  installed ASF and loads them back.

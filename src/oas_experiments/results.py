@@ -130,6 +130,7 @@ def _run_row(result: Any, meta: dict[str, Any]) -> dict[str, Any]:
         "run_id": run["run_id"],
         "experiment": run["experiment"],
         "method": run["method"]["name"],
+        "method_family": run["method"].get("family", run["method"]["name"]),
         "selector_class": run["method"]["selector"]["class"],
         "stream": run["stream"]["name"],
         "stream_kind": run["stream"]["kind"],

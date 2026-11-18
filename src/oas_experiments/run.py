@@ -4,8 +4,7 @@
     python -m oas_experiments.run <config> --index <n>      # for job arrays
 
 Exit codes: 0 = result written or already present, 2 = bad arguments or
-config, 3 = a result exists for a different config, 4 = --final refused,
-5 = the installed ASF cannot save results yet.
+config, 3 = a result exists for a different config, 4 = --final refused.
 """
 
 from __future__ import annotations
@@ -26,7 +25,7 @@ from oas_experiments.config import (
 )
 from oas_experiments.streams import build_stream
 
-EXIT_OK, EXIT_USAGE, EXIT_CONFLICT, EXIT_NOT_FINAL, EXIT_NO_RESULT_IO = 0, 2, 3, 4, 5
+EXIT_OK, EXIT_USAGE, EXIT_CONFLICT, EXIT_NOT_FINAL = 0, 2, 3, 4
 
 
 def run_prequential(*args: Any, **kwargs: Any) -> Any:
@@ -103,14 +102,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (ConfigError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_USAGE
-
-    if not io.asf_supports_results():
-        print(
-            "error: the installed ASF has no OnlineResult.save/load (F1 "
-            "interfaces); nothing was run.",
-            file=sys.stderr,
-        )
-        return EXIT_NO_RESULT_IO
 
     repo = provenance.repo_state()
     if args.final:

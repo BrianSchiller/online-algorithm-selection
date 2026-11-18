@@ -63,21 +63,6 @@ def minimal_config() -> dict:
 
 
 @pytest.fixture
-def stand_in_f1(monkeypatch):
-    """Route result IO and the evaluator through the schema-v1 stand-ins.
-
-    For tests that must pass while ASF has no ``OnlineResult.save`` / ``load``.
-    """
-    import oas_experiments.io as io
-    import oas_experiments.run as run
-    from support.schema_v1 import StandInOnlineResult, stand_in_run_prequential
-
-    monkeypatch.setattr(io, "result_class", lambda: StandInOnlineResult)
-    monkeypatch.setattr(run, "run_prequential", stand_in_run_prequential)
-    return StandInOnlineResult
-
-
-@pytest.fixture
 def minimal_config_file(tmp_path, minimal_config) -> Path:
     import yaml
 

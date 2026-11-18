@@ -12,7 +12,7 @@ dependencies = [
   # ASF is pinned by commit hash. `--final` runs refuse to start unless the
   # imported ASF is at exactly this commit (see README, "Final runs").
   # For development, install the local clone on top: pip install -e ../asf
-  "asf[online] @ git+https://github.com/BrianSchiller/asf@3083aa077920e8dbc0c06526534fb2a147678cc3",
+  "asf[online] @ git+https://github.com/BrianSchiller/asf@ae9fcb518deec14762129b15a7eff0594026cecf",
   "numpy",
   "pandas",
   "pyyaml",

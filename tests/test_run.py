@@ -16,9 +16,7 @@ def _run(config, tmp_path, *extra):
     return run.main([str(config), "--results-dir", str(tmp_path / "results"), *extra])
 
 
-def test_run_writes_one_result_with_provenance(
-    stand_in_f1, minimal_config_file, tmp_path, capsys
-):
+def test_run_writes_one_result_with_provenance(minimal_config_file, tmp_path, capsys):
     assert _run(minimal_config_file, tmp_path, "--run-id", RUN_ID) == 0
     out = tmp_path / "results" / "mini" / RUN_ID
     assert sorted(p.name for p in out.iterdir()) == ["meta.json", "steps.parquet"]
@@ -49,9 +47,7 @@ def test_run_writes_one_result_with_provenance(
     json.dumps(extra, allow_nan=False)
 
 
-def test_warm_run_uses_the_warm_start_prefix(
-    stand_in_f1, minimal_config_file, tmp_path
-):
+def test_warm_run_uses_the_warm_start_prefix(minimal_config_file, tmp_path):
     run_id = "sudden-s0__warm20__static__seed1"
     assert _run(minimal_config_file, tmp_path, "--run-id", run_id) == 0
     result = io.load_result(tmp_path / "results" / "mini" / run_id)
@@ -62,7 +58,7 @@ def test_warm_run_uses_the_warm_start_prefix(
 
 
 def test_existing_result_is_skipped_unless_overwrite(
-    stand_in_f1, minimal_config_file, tmp_path, capsys
+    minimal_config_file, tmp_path, capsys
 ):
     assert _run(minimal_config_file, tmp_path, "--run-id", RUN_ID) == 0
     meta_file = tmp_path / "results" / "mini" / RUN_ID / "meta.json"
@@ -79,7 +75,7 @@ def test_existing_result_is_skipped_unless_overwrite(
 
 
 def test_existing_result_of_a_different_config_is_a_conflict(
-    stand_in_f1, minimal_config, minimal_config_file, tmp_path, capsys
+    minimal_config, minimal_config_file, tmp_path, capsys
 ):
     assert _run(minimal_config_file, tmp_path, "--run-id", RUN_ID) == 0
     minimal_config["methods"][1]["selector"]["params"]["gamma"] = 0.5
@@ -91,9 +87,7 @@ def test_existing_result_of_a_different_config_is_a_conflict(
     assert stored["extra"]["run"]["method"]["selector"]["params"]["gamma"] == 0.5
 
 
-def test_incomplete_directory_is_not_a_result(
-    stand_in_f1, minimal_config_file, tmp_path
-):
+def test_incomplete_directory_is_not_a_result(minimal_config_file, tmp_path):
     out = tmp_path / "results" / "mini" / RUN_ID
     out.mkdir(parents=True)
     (out / "meta.json").write_text("{}")  # a job killed half-way through
@@ -102,7 +96,7 @@ def test_incomplete_directory_is_not_a_result(
     assert io.is_complete(out)
 
 
-def test_index_selects_the_nth_listed_run(stand_in_f1, minimal_config_file, tmp_path):
+def test_index_selects_the_nth_listed_run(minimal_config_file, tmp_path):
     config = load_config(minimal_config_file)
     assert _run(minimal_config_file, tmp_path, "--index", "4") == 0
     assert io.is_complete(tmp_path / "results" / "mini" / config.run_ids[4])
@@ -110,7 +104,7 @@ def test_index_selects_the_nth_listed_run(stand_in_f1, minimal_config_file, tmp_
     assert _run(minimal_config_file, tmp_path, "--index", "-1") == 2
 
 
-def test_bad_arguments(stand_in_f1, minimal_config_file, tmp_path, capsys):
+def test_bad_arguments(minimal_config_file, tmp_path, capsys):
     assert _run(minimal_config_file, tmp_path, "--run-id", "nope") == 2
     assert "Unknown run id" in capsys.readouterr().err
     assert _run(tmp_path / "missing.yaml", tmp_path, "--run-id", RUN_ID) == 2
@@ -119,7 +113,7 @@ def test_bad_arguments(stand_in_f1, minimal_config_file, tmp_path, capsys):
 
 
 def test_build_errors_are_reported(
-    stand_in_f1, minimal_config, minimal_config_file, tmp_path, capsys
+    minimal_config, minimal_config_file, tmp_path, capsys
 ):
     minimal_config["methods"][1]["selector"]["class"] = "asf.online.selectors.Nope"
     minimal_config_file.write_text(yaml.safe_dump(minimal_config))
@@ -127,9 +121,7 @@ def test_build_errors_are_reported(
     assert "Cannot import" in capsys.readouterr().err
 
 
-def test_final_refuses_dirty_code(
-    stand_in_f1, minimal_config_file, tmp_path, monkeypatch, capsys
-):
+def test_final_refuses_dirty_code(minimal_config_file, tmp_path, monkeypatch, capsys):
     clean = {"commit": "a" * 40, "dirty": False, "commit_source": "git"}
     monkeypatch.setattr(provenance, "pinned_asf_commit", lambda: "a" * 40)
     monkeypatch.setattr(provenance, "asf_state", lambda: clean)
@@ -149,22 +141,13 @@ def test_final_refuses_dirty_code(
     assert stored["extra"]["final"] is True
 
 
-def test_without_f1_nothing_runs(minimal_config_file, tmp_path, monkeypatch, capsys):
-    monkeypatch.setattr(io, "asf_supports_results", lambda: False)
-    assert _run(minimal_config_file, tmp_path, "--run-id", RUN_ID) == 5
-    assert "OnlineResult.save/load" in capsys.readouterr().err
-    assert not (tmp_path / "results").exists()
-
-
-def test_results_dir_from_environment(
-    stand_in_f1, minimal_config_file, tmp_path, monkeypatch
-):
+def test_results_dir_from_environment(minimal_config_file, tmp_path, monkeypatch):
     monkeypatch.setenv(io.RESULTS_DIR_ENV, str(tmp_path / "elsewhere"))
     assert run.main([str(minimal_config_file), "--run-id", RUN_ID]) == 0
     assert io.is_complete(tmp_path / "elsewhere" / "mini" / RUN_ID)
 
 
-def test_list_all_missing_and_count(stand_in_f1, minimal_config_file, tmp_path, capsys):
+def test_list_all_missing_and_count(minimal_config_file, tmp_path, capsys):
     results = ["--results-dir", str(tmp_path / "results")]
     config = load_config(minimal_config_file)
 

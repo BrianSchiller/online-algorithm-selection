@@ -9,11 +9,20 @@ into :class:`RunSpec` objects, each with a stable, human-readable run id::
 Run ids are built from names only, so they do not change when methods, streams
 or seeds are added to a config. This module does not import ASF, so listing the
 runs of a config is fast.
+
+A method may carry a ``sweep``: a mapping from a dotted path inside its
+``selector.params`` to a list of values. It expands into one method per value
+(the product over several paths), named ``<name>-<last path part><value>``::
+
+    - name: fp-unc
+      sweep: {gate.params.rate: [0.1, 0.2]}   # -> fp-unc-rate0.1, fp-unc-rate0.2
+      selector: {...}
 """
 
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
 import math
 import re
@@ -57,6 +66,8 @@ class RunSpec:
     seed: int
     par_factor: float
     result_mode: str
+    family: str = ""
+    sweep: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         """The resolved config of this run, as stored in the result metadata.
@@ -65,11 +76,14 @@ class RunSpec:
         because its value is only known once the stream is built; the value
         itself is recorded by ASF as ``meta.stream.cutoff``.
         """
+        method: dict[str, Any] = {"name": self.method, "selector": self.selector}
+        if self.sweep:  # only for swept methods, so other stored configs stay as-is
+            method.update(family=self.family, sweep=self.sweep)
         return jsonable(
             {
                 "experiment": self.experiment,
                 "run_id": self.run_id,
-                "method": {"name": self.method, "selector": self.selector},
+                "method": method,
                 "stream": {
                     "name": self.stream,
                     "kind": self.stream_kind,
@@ -208,6 +222,57 @@ def _spec(value: Any, where: str) -> dict[str, Any]:
     return {"class": spec["class"], "params": params}
 
 
+def _sweep_label(value: Any) -> str:
+    if isinstance(value, bool):
+        return str(value).lower()
+    return str(value)
+
+
+def _expand_sweep(method: dict[str, Any], sweep: Any, where: str) -> list[dict]:
+    """One method per combination of swept values (see the module docstring)."""
+    if not isinstance(sweep, dict) or not sweep:
+        raise ConfigError(f"{where}.sweep must be a non-empty mapping.")
+    paths, value_lists = [], []
+    for path, values in sweep.items():
+        if not isinstance(path, str) or not all(path.split(".")):
+            raise ConfigError(f"{where}.sweep: {path!r} is not a dotted path.")
+        values = _entries(values, f"{where}.sweep.{path}")
+        if any(
+            v is not None and not isinstance(v, (str, int, float, bool)) for v in values
+        ):
+            raise ConfigError(f"{where}.sweep.{path} must list plain values.")
+        _unique(values, f"{where}.sweep.{path}")
+        paths.append(path)
+        value_lists.append(values)
+
+    expanded = []
+    for combination in itertools.product(*value_lists):
+        params = json.loads(json.dumps(method["selector"]["params"]))  # deep copy
+        name = method["name"]
+        for path, value in zip(paths, combination, strict=True):
+            *parents, key = path.split(".")
+            target = params
+            for part in parents:
+                target = target.get(part) if isinstance(target, dict) else None
+                if not isinstance(target, dict):
+                    raise ConfigError(
+                        f"{where}.sweep: {path!r} does not lead to a mapping in "
+                        "selector.params; give the enclosing block in the selector."
+                    )
+            target[key] = value
+            name += f"-{key}{_sweep_label(value)}"
+        expanded.append(
+            {
+                **method,
+                "name": _name(name, f"{where}.sweep (generated name)"),
+                "selector": {"class": method["selector"]["class"], "params": params},
+                "family": method["name"],
+                "sweep": dict(zip(paths, combination, strict=True)),
+            }
+        )
+    return expanded
+
+
 # ------------------------------------------------------------------ validation
 def parse_config(raw: Any, path: Path | None = None) -> ExperimentConfig:
     """Validate a parsed config and expand its grid."""
@@ -291,7 +356,10 @@ def parse_config(raw: Any, path: Path | None = None) -> ExperimentConfig:
     for i, entry in enumerate(_entries(top["methods"], "methods")):
         where = f"methods[{i}]"
         m = _mapping(
-            entry, where, {"name", "selector", "protocols"}, {"name", "selector"}
+            entry,
+            where,
+            {"name", "selector", "protocols", "sweep"},
+            {"name", "selector"},
         )
         selector = _spec(m["selector"], f"{where}.selector")
         if "random_state" in selector["params"]:
@@ -308,13 +376,17 @@ def parse_config(raw: Any, path: Path | None = None) -> ExperimentConfig:
                 f"{where}.protocols refers to undefined protocol(s) {unknown}."
             )
         _unique(allowed, f"{where}.protocols")
-        methods.append(
-            {
-                "name": _name(m["name"], f"{where}.name"),
-                "selector": selector,
-                "protocols": allowed,
-            }
-        )
+        method = {
+            "name": _name(m["name"], f"{where}.name"),
+            "selector": selector,
+            "protocols": allowed,
+            "family": m["name"],
+            "sweep": {},
+        }
+        if "sweep" in m:
+            methods.extend(_expand_sweep(method, m["sweep"], where))
+        else:
+            methods.append(method)
     _unique([m["name"] for m in methods], "methods")
 
     runs: list[RunSpec] = []
@@ -348,6 +420,8 @@ def parse_config(raw: Any, path: Path | None = None) -> ExperimentConfig:
                                 seed=seed,
                                 par_factor=float(par_factor),
                                 result_mode=result_mode,
+                                family=m["family"],
+                                sweep=jsonable(m["sweep"]),
                             )
                         )
     if not runs:

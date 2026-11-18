@@ -1,0 +1,172 @@
+# Phase 1 pilot: every implemented method family on SAT12 streams.
+#
+# Goal: a first table and first cost-versus-quality curves before the real
+# datasets arrive, and a check that every method runs end to end. Settings are
+# reasonable defaults, not tuned; nothing from this experiment is reported.
+#
+#   python -m oas_experiments.list   configs/pilot_sat12.yaml --count
+#   python -m oas_experiments.launch configs/pilot_sat12.yaml --jobs 8
+#
+# Run from the repository root: `root` below is relative to the working
+# directory (aslib_data next to the folder holding this repository).
+name: pilot_sat12
+
+evaluation:
+  par_factor: 10.0
+  result_mode: best_of_scheduled
+
+seeds: [0, 1, 2]
+
+protocols:
+  - {name: warm300, type: warm, n_warmstart: 300}   # = the first HAND segment of the switching streams
+  - {name: cold, type: cold}
+
+streams:
+  # Sudden, recurring drift: 300 instances of each scenario, twice.
+  - name: sat12-switch
+    kind: aslib
+    seeds: [0]
+    params: &sat12
+      root: ../../aslib_data
+      scenarios: [SAT12-HAND, SAT12-INDU, SAT12-RAND]
+    drift:
+      builder: grouped
+      params: &switch
+        labels: scenario
+        schedule: [SAT12-HAND, SAT12-INDU, SAT12-RAND, SAT12-HAND, SAT12-INDU, SAT12-RAND]
+        segment_length: 300
+
+  # The same switches, each spread over 150 instances.
+  - name: sat12-gradual
+    kind: aslib
+    seeds: [0]
+    params: *sat12
+    drift:
+      builder: grouped
+      params:
+        <<: *switch
+        transition_length: 150
+
+  # Incremental drift: all instances, roughly sorted by clause/variable ratio.
+  - name: sat12-ratio
+    kind: aslib
+    seeds: [0]
+    params: *sat12
+    drift:
+      builder: sorted
+      params:
+        key: {feature: vars_clauses_ratio}
+        jitter: 0.05
+
+methods:
+  # --- offline baseline (warm start only) -------------------------------
+  - name: static-pairwise
+    protocols: [warm300]
+    selector:
+      class: asf.online.selectors.StaticOnlineSelector
+      params:
+        selector:
+          class: asf.selectors.PairwiseClassifier
+          params:
+            model_class: {type: sklearn.tree.DecisionTreeClassifier}
+            random_state: "${seed}"
+
+  # --- Rook et al.: always two runs ---------------------------------------
+  - name: rook-pca                      # drift-triggered retraining
+    selector:
+      class: asf.online.selectors.OnlinePairwiseSelector
+      params: &rook
+        variant: paper
+        n_additional: 1
+        reference_period: 300
+        model_class: {type: sklearn.tree.DecisionTreeClassifier}
+        detector:
+          class: asf.online.drift.PCAReconstructionDetector
+          params: {chunk_size: 50, random_state: "${seed}"}
+
+  - name: rook-periodic                 # retraining at a fixed interval
+    selector:
+      class: asf.online.selectors.OnlinePairwiseSelector
+      params:
+        variant: paper
+        n_additional: 1
+        reference_period: 300
+        model_class: {type: sklearn.tree.DecisionTreeClassifier}
+        retrain_policy:
+          class: asf.online.retraining.PeriodicRetrain
+          params: {every: 100}
+
+  # --- frugal pairwise: a second run only when unsure ---------------------
+  - name: frugal-unc
+    sweep:
+      gate.params.rate: [0.1, 0.25, 0.5]
+    selector:
+      class: asf.online.selectors.FrugalPairwiseSelector
+      params:
+        model_class:
+          type: sklearn.ensemble.RandomForestClassifier
+          params: {n_estimators: 50}
+        update_every: 10
+        gate:
+          class: asf.online.gate.UncertaintyGate
+          params: {rate: 0.25, random_state: "${seed}"}
+
+  # --- runtime models (Degroote et al.) -----------------------------------
+  - name: epm                           # one run per instance
+    selector:
+      class: asf.online.selectors.OnlineEPMSelector
+      params: &epm
+        estimator:
+          class: sklearn.ensemble.RandomForestRegressor
+          params: {n_estimators: 100, random_state: "${seed}"}
+        uncertainty: tree_std
+        target_transform: log10
+        budget: "${stream.cutoff}"
+
+  - name: epm-unc
+    sweep:
+      gate.params.rate: [0.1, 0.25]
+    selector:
+      class: asf.online.selectors.OnlineEPMSelector
+      params:
+        <<: *epm
+        gate:
+          class: asf.online.gate.UncertaintyGate
+          params: {rate: 0.1, random_state: "${seed}"}
+
+  - name: epm-adwin                     # performance-based drift detection
+    selector:
+      class: asf.online.selectors.OnlineEPMSelector
+      params:
+        <<: *epm
+        imputation: {class: asf.online.imputation.ExpectedImputer}
+        detector:
+          class: asf.online.drift.ADWINDetector
+          params: {value_range: [-2.302585, 2.302585], direction: up}   # factor 10 either way
+        drift_statistic: {class: asf.online.drift.LogRuntimeResidual}
+        drift_response: {class: asf.online.retraining.RetrainResponse}
+
+  # --- bandits ------------------------------------------------------------
+  - name: ds-ts
+    selector:
+      class: asf.online.selectors.DiscountedTSSelector
+      params: &dsts
+        gamma: 0.99
+        budget: "${stream.cutoff}"
+
+  - name: ds-ts-unc
+    sweep:
+      gate.params.rate: [0.1, 0.25]
+    selector:
+      class: asf.online.selectors.DiscountedTSSelector
+      params:
+        <<: *dsts
+        gate:
+          class: asf.online.gate.UncertaintyGate
+          params: {rate: 0.1, random_state: "${seed}"}
+
+  - name: dts-oc
+    selector:
+      class: asf.online.selectors.DTSOCSelector
+      params:
+        budget: "${stream.cutoff}"
