@@ -16,3 +16,8 @@ dist/
 # editors
 .vscode/
 .idea/
+
+# output
+*.pdf
+*.tex
+*.png
