@@ -292,8 +292,7 @@ def run_table(
             "n_drift_signals": indexed["n_drift_signals"],
         }
     )
-    detector = runs.get("param.detector.class", pd.Series(index=runs.index))
-    uses_detector = pd.Series(detector.notna().to_numpy(), index=runs["run_id"])
+    uses_detector = pd.Series(_uses_detector(runs).to_numpy(), index=runs["run_id"])
     derived = derived.join(
         _detection(runs, detection_tolerance).where(uses_detector, axis=0)
     )
@@ -313,11 +312,18 @@ def run_table(
     )
 
 
+def _uses_detector(runs: pd.DataFrame) -> pd.Series:
+    """True for runs whose selector has a drift detector (``detector`` param)."""
+    return runs.get("param.detector.class", pd.Series(index=runs.index)).notna()
+
+
 def _keys(by: Sequence[str]) -> list[str]:
-    """Group keys; ``method_family`` rides along with ``method``."""
+    """Group keys; ``method_family`` and ``uses_detector`` ride along with
+    ``method`` (both are constant per method)."""
     keys = list(by)
-    if "method" in keys and "method_family" not in keys:
-        keys.insert(keys.index("method") + 1, "method_family")
+    if "method" in keys:
+        at = keys.index("method") + 1
+        keys[at:at] = [k for k in ("method_family", "uses_detector") if k not in keys]
     return keys
 
 
@@ -340,17 +346,16 @@ def aggregate(
     Returns
     -------
     pd.DataFrame
-        The group keys (plus ``method_family`` and, if in ``table``,
-        ``uses_detector`` when grouping by ``method``),
-        ``<m>_mean``, ``<m>_std``, ``<m>_ci95`` per metric, and ``n`` (runs in
-        the group). std uses ddof=1; mean, std and CI skip NaN values, so a
-        metric with fewer than two values has NaN std and CI. The column name
+        The group keys (plus ``method_family`` and ``uses_detector`` when
+        grouping by ``method``), ``<m>_mean``, ``<m>_std``, ``<m>_ci95`` per
+        metric, and ``n`` (runs in the group). std uses ddof=1; mean, std and
+        CI skip NaN values, so a metric with fewer than two values has NaN std
+        and CI. The column name
         stays ``_ci95`` for any ``confidence``.
     """
-    keys = _keys(by)
-    if "method" in keys and "uses_detector" in table:  # constant per method
-        keys.insert(keys.index("method_family") + 1, "uses_detector")
-    groups = table.groupby(keys, sort=False)
+    if "uses_detector" not in table:
+        table = table.assign(uses_detector=_uses_detector(table))
+    groups = table.groupby(_keys(by), sort=False)
     values = groups[list(metrics)]
     mean, std, count = values.mean(), values.std(), values.count()
     ci = _ci(std, count, confidence)
@@ -379,11 +384,13 @@ def aggregate_curves(
     Returns
     -------
     pd.DataFrame
-        Columns ``[*by, method_family, step, mean, lo, hi]``; for the default
-        ``by``: ``[stream, protocol, method, method_family, step, mean, lo,
-        hi]``. Raises if the runs of a group have different drift points,
-        since then a step does not mean the same position in the stream.
+        Columns ``[*by, method_family, uses_detector, step, mean, lo, hi]``;
+        for the default ``by``: ``[stream, protocol, method, method_family,
+        uses_detector, step, mean, lo, hi]``. Raises if the runs of a group
+        have different drift points, since then a step does not mean the same
+        position in the stream.
     """
+    runs = runs.assign(uses_detector=_uses_detector(runs))
     keys = _keys(by)
     n_drifts = runs.groupby(keys)["drift_points"].agg(lambda s: len(set(map(tuple, s))))
     if (n_drifts > 1).any():

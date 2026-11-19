@@ -265,6 +265,7 @@ def test_aggregate_curves(fixture):
         "protocol",
         "method",
         "method_family",
+        "uses_detector",
         "step",
         "mean",
         "lo",

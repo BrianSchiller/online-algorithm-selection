@@ -328,7 +328,8 @@ maximising.
 `method_family` and `uses_detector`), pooling stream and selector seeds; per metric `<m>_mean`,
 `<m>_std` (ddof 1) and `<m>_ci95` (half-width of the t-interval, NaN for
 fewer than two values), and `n` runs. `aggregate_curves` gives
-`[stream, protocol, method, method_family, step, mean, lo, hi]` with
+`[stream, protocol, method, method_family, uses_detector, step, mean, lo, hi]`
+with
 `lo`/`hi` = mean ∓ CI half-width per step; it refuses groups whose runs have
 different drift points.
 
