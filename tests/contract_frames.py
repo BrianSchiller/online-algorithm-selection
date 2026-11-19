@@ -2,7 +2,8 @@
 
 Streams: ``switch`` (two drift points, one transition interval) and ``calm``
 (no drift). Protocols: ``warm`` and ``cold``. Methods: ``rook`` (detector,
-signals in every run), ``ds-ts`` (no detector), the swept family ``unc``
+signals in every run; the only method with ``uses_detector`` and detection
+metrics, NaN elsewhere), ``ds-ts`` (no detector), the swept family ``unc``
 (``unc-rate0.1``, ``unc-rate0.5``) and ``single`` (one seed only, so its
 ci95 is NaN).
 """
@@ -24,6 +25,7 @@ METRICS = [
     "n_missed",
     "n_false_alarms",
     "mean_recovery",
+    "n_not_recovered",
     "mean_peak_regret",
 ]
 METHODS = [  # method, family, seeds
@@ -54,8 +56,11 @@ def runs_frame() -> pd.DataFrame:
                         protocol_type=protocol_type,
                         seed=seed,
                         closed_gap=0.1 * k + 0.01 * seed,
+                        uses_detector=detector,
                         n_drift_signals=2 if detector else 0,
                         mean_delay=5.0 + seed if detector else np.nan,
+                        n_missed=0.0 if detector else np.nan,
+                        n_false_alarms=1.0 + seed if detector else np.nan,
                         drift_points=points,
                         transition_intervals=intervals,
                         drift_steps=[105, 210 + seed] if detector else [],
@@ -66,7 +71,8 @@ def runs_frame() -> pd.DataFrame:
 
 def agg_frame(runs: pd.DataFrame | None = None) -> pd.DataFrame:
     runs = runs_frame() if runs is None else runs
-    keys = ["stream", "protocol", "method", "method_family", "protocol_type"]
+    keys = ["stream", "protocol", "protocol_type", "method", "method_family"]
+    keys.append("uses_detector")
     grouped = runs.groupby(keys)[METRICS]
     mean, std, n = grouped.mean(), grouped.std(), grouped.size()
     ci = 1.96 * std.div(np.sqrt(n), axis=0)
@@ -93,6 +99,7 @@ def curves_frame(n_steps: int = 300) -> pd.DataFrame:
                             protocol=protocol,
                             method=method,
                             method_family=family,
+                            uses_detector=method == "rook",
                             step=step,
                             mean=mean,
                             lo=mean - spread,

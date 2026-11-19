@@ -21,12 +21,12 @@ def test_main_table_frame_shape():
         "unc-rate0.5",
     ]
     assert frame.columns.names == ["stream", "metric", "stat"]
-    assert frame.shape[1] == 2 * 4 * 2  # streams x metrics x (mean, ci95)
+    assert frame.shape[1] == 2 * 5 * 2  # streams x metrics x (mean, ci95)
 
 
 def test_main_table_bolds_best_per_column():
     _, latex = tables.main_table(agg_frame(), "warm")
-    assert latex.startswith(r"\begin{tabular}{lrrrrrrrr}")
+    assert latex.startswith(r"\begin{tabular}{l" + "r" * 10 + "}")
     assert r"\toprule" in latex and r"\bottomrule" in latex
     # Every metric grows with the method's position in METHODS: the last one
     # (single, one seed, no CI) has the best closed gap, rook the best of the rest.
@@ -43,7 +43,7 @@ def test_main_table_missing_ci_and_missing_metric():
     single = _row(latex, "single")
     assert "$\\pm$" not in single[1]  # one seed: ci95 is NaN
     assert _row(latex, "ds-ts")[2] == "--"
-    assert all("$\\pm$" not in cell for cell in _row(latex, "rook")[4::4])
+    assert all("$\\pm$" not in cell for cell in _row(latex, "rook")[4::5])
 
 
 def test_main_table_escapes_names():
@@ -62,6 +62,6 @@ def test_detection_table_only_detector_methods():
 
 def test_detection_table_empty_without_detectors():
     agg = agg_frame()
-    agg["n_drift_signals_mean"] = 0.0
+    agg["uses_detector"] = False
     frame, _ = tables.detection_table(agg, "warm")
     assert frame.empty

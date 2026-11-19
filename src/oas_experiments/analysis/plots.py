@@ -255,15 +255,15 @@ def detection_raster(
 ) -> tuple[Figure, Axes]:
     """Detector signals per method and seed against the true drift.
 
-    One row per run of a method that signalled drift in at least one run of
-    this stream and protocol; marks at its ``drift_steps``, drawn over the
+    One row per run of a method with a drift detector (``uses_detector``),
+    also if it never fired; marks at its ``drift_steps``, drawn over the
     drift points and transition intervals.
 
     Parameters
     ----------
     runs
         Run table with drift_steps, drift_points, transition_intervals,
-        n_drift_signals, method, method_family, seed.
+        uses_detector, method, method_family, seed.
     stream, protocol
         The panel to draw.
     ax
@@ -272,9 +272,9 @@ def detection_raster(
         Figure width in inches if a new figure is created.
     """
     selected = _select(runs, stream, protocol)
-    signals = selected.groupby("method")["n_drift_signals"].max()
-    data = selected[selected["method"].isin(signals.index[signals > 0])]
-    data = data.sort_values(["method_family", "method", "seed"])
+    data = selected[selected["uses_detector"]].sort_values(
+        ["method_family", "method", "seed"]
+    )
     fig, ax = _axes(ax, width, aspect=0.12 + 0.04 * len(data))
     _drift_background(ax, selected)
     styles = family_styles(runs["method_family"])

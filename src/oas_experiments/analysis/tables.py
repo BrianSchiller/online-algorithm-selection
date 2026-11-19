@@ -17,6 +17,8 @@ MAIN_METRICS = {
     "solver_cpu": ("Solver CPU", False),
     "extra_run_rate": ("Extra runs", False),
     "mean_recovery": ("Recovery", False),
+    # Recovery averages only recovered drift points, so show the others too.
+    "n_not_recovered": ("Not recovered", False),
 }
 DETECTION_METRICS = {
     "mean_delay": ("Delay", False),
@@ -28,7 +30,8 @@ DETECTION_METRICS = {
 def main_table(
     agg: pd.DataFrame, protocol: str, digits: int = 2
 ) -> tuple[pd.DataFrame, str]:
-    """Closed gap, solver CPU, extra-run rate and recovery per method and stream.
+    """Closed gap, solver CPU, extra-run rate, recovery and drift points not
+    recovered from, per method and stream.
 
     Parameters
     ----------
@@ -48,13 +51,9 @@ def detection_table(
 ) -> tuple[pd.DataFrame, str]:
     """Detection delay, missed drifts and false alarms of detector methods.
 
-    A method counts as a detector method if it signalled drift on some stream
-    (``n_drift_signals_mean > 0``). Parameters as in :func:`main_table`.
+    Only methods with ``uses_detector``. Parameters as in :func:`main_table`.
     """
-    data = agg[agg["protocol"] == protocol]
-    # shortcut: a detector that never fires is left out; use a D2 flag once one exists.
-    signalled = data.groupby("method")["n_drift_signals_mean"].max()
-    data = data[data["method"].isin(signalled.index[signalled > 0])]
+    data = agg[(agg["protocol"] == protocol) & agg["uses_detector"]]
     return _table(data, DETECTION_METRICS, digits)
 
 

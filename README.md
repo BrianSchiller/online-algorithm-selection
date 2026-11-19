@@ -358,11 +358,11 @@ Writes, for every stream and protocol in the results:
 | --- | --- |
 | `regret_<stream>_<protocol>.pdf` | rolling regret per method (mean, CI band), drift points dashed, transition intervals shaded |
 | `extra_runs_<stream>_<protocol>.pdf` | rolling extra-run rate, same layout |
-| `raster_<stream>_<protocol>.pdf` | detector signals per method and seed against the true drift (only if a detector signalled) |
+| `raster_<stream>_<protocol>.pdf` | detector signals per method and seed against the true drift (only if a method has a detector) |
 | `front.pdf` | closed gap against solver CPU, one panel per stream and protocol, one line per method family (its sweep), ci95 error bars |
 | `front_overhead.pdf` | the same with selector and detector time added to x |
-| `table_main_<protocol>.tex` | closed gap, solver CPU, extra-run rate, recovery: mean ± ci95 per method and stream, best in bold |
-| `table_detection_<protocol>.tex` | delay, missed drifts, false alarms of methods whose detector signalled |
+| `table_main_<protocol>.tex` | closed gap, solver CPU, extra-run rate, recovery, drift points not recovered from: mean ± ci95 per method and stream, best in bold |
+| `table_detection_<protocol>.tex` | delay, missed drifts, false alarms of methods with a drift detector |
 
 `--only` takes the part before the stream name (`regret`, `extra_runs`,
 `raster`, `front`, `front_overhead`, `table_main`, `table_detection`).

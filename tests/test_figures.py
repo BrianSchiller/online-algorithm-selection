@@ -42,8 +42,8 @@ def test_write_all(tmp_path):
 
 def test_write_all_only_and_no_detectors(tmp_path):
     frames = _frames()
-    frames.runs["n_drift_signals"] = 0
-    frames.agg["n_drift_signals_mean"] = 0.0
+    frames.runs["uses_detector"] = False
+    frames.agg["uses_detector"] = False
     assert not figures.write_all(frames, tmp_path, only="raster")
     assert not figures.write_all(frames, tmp_path, only="table_detection")
     written = figures.write_all(frames, tmp_path, only="front")

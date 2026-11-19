@@ -5,10 +5,10 @@
     python -m oas_experiments.figures results/pilot_sat12 --out figs --width 4.5
 
 Per stream and protocol: ``regret_<stream>_<protocol>.pdf``,
-``extra_runs_<stream>_<protocol>.pdf`` and, if a detector signalled,
+``extra_runs_<stream>_<protocol>.pdf`` and, if a method has a detector,
 ``raster_<stream>_<protocol>.pdf``. Over all streams: ``front.pdf`` and
 ``front_overhead.pdf``. Per protocol: ``table_main_<protocol>.tex`` and, if a
-detector signalled, ``table_detection_<protocol>.tex``.
+method has a detector, ``table_detection_<protocol>.tex``.
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ NAMES = (
 class Frames(NamedTuple):
     """The D2 frames the figures are drawn from."""
 
-    runs: pd.DataFrame  # runs of load_experiment, with the per-run drift lists
+    runs: pd.DataFrame  # runs of load_experiment (drift lists) plus uses_detector
     agg: pd.DataFrame  # aggregate over seeds, incl. protocol_type
     regret: pd.DataFrame  # aggregated rolling-regret curves
     extra_runs: pd.DataFrame  # aggregated rolling extra-run-rate curves
@@ -51,7 +51,6 @@ def d2_frames(experiment_dir: str | Path) -> Frames:
     """Load an experiment and compute the D2 frames (the only caller of D2)."""
     results = load_experiment(experiment_dir)
     steps = metrics.add_step_metrics(results.steps, results.runs)
-    steps["extra_run"] = (steps["n_runs"] > 1).astype(float)
     table = metrics.run_table(results.runs, results.steps)
     by = ("stream", "protocol", "protocol_type", "method")  # protocol_type: markers
 
@@ -61,7 +60,7 @@ def d2_frames(experiment_dir: str | Path) -> Frames:
         )
 
     return Frames(
-        runs=results.runs,
+        runs=results.runs.merge(table[["run_id", "uses_detector"]], on="run_id"),
         agg=metrics.aggregate(table, by=by),
         regret=curves("regret"),
         extra_runs=curves("extra_run"),
@@ -110,7 +109,7 @@ def write_all(
             )
             save(fig, f"extra_runs_{tag}.pdf")
         selected = runs[(runs["stream"] == stream) & (runs["protocol"] == protocol)]
-        if want("raster") and (selected["n_drift_signals"] > 0).any():
+        if want("raster") and selected["uses_detector"].any():
             fig, _ = plots.detection_raster(runs, stream, protocol, width=width)
             save(fig, f"raster_{tag}.pdf")
 

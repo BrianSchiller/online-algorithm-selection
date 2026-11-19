@@ -166,6 +166,14 @@ def test_raster_stream_without_drift_points():
 
 def test_raster_without_detectors_is_empty():
     runs = runs_frame()
-    runs["n_drift_signals"] = 0
+    runs["uses_detector"] = False
     _, ax = plots.detection_raster(runs, "switch", "warm")
     assert not ax.get_yticklabels()
+
+
+def test_raster_keeps_detector_that_never_fired():
+    runs = runs_frame()
+    runs.loc[runs.method == "ds-ts", "uses_detector"] = True  # no drift_steps
+    _, ax = plots.detection_raster(runs, "switch", "warm")
+    labels = [t.get_text() for t in ax.get_yticklabels()]
+    assert labels == ["ds-ts s0", "ds-ts s1", "rook s0", "rook s1"]
