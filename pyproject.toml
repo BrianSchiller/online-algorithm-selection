@@ -20,7 +20,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "ruff", "pyarrow"]
+analysis = ["matplotlib"]
+dev = ["pytest", "ruff", "pyarrow", "matplotlib"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

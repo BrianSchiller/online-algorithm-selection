@@ -25,7 +25,8 @@ src/oas_experiments/
   launch.py                 python -m oas_experiments.launch (all missing runs, in parallel)
   results.py                load an experiment into DataFrames
   datasets/                 placeholder: dataset preparation (bin packing, SATCOMP)
-  analysis/                 metrics.py, stats.py (see Metrics); plots
+  analysis/                 metrics.py, stats.py (see Metrics); plots.py, tables.py, style.py
+  figures.py                python -m oas_experiments.figures (all figures and tables)
 scripts/                    SLURM job array (submit.sh, slurm_array.sh)
 tests/                      tests, schema-v1 fixture results
 results/                    <experiment>/<run id>/{meta.json, steps.parquet}  (not versioned)
@@ -341,6 +342,36 @@ baselines exist only warm). `mean_ranks` (1 = best, ties averaged),
 (two-sided signed-rank test per method against a reference, Holm-corrected
 `p_holm`; `median_diff` = method − reference). With 6 cells the smallest
 exact Wilcoxon p-value is 0.031.
+
+## Figures and tables
+
+Needs matplotlib: `pip install -e ".[analysis]"` (included in `dev`).
+
+```
+python -m oas_experiments.figures results/pilot_sat12 --out figures/pilot_sat12
+python -m oas_experiments.figures results/pilot_sat12 --out figures/pilot_sat12 --only front
+```
+
+Writes, for every stream and protocol in the results:
+
+| file | content |
+| --- | --- |
+| `regret_<stream>_<protocol>.pdf` | rolling regret per method (mean, CI band), drift points dashed, transition intervals shaded |
+| `extra_runs_<stream>_<protocol>.pdf` | rolling extra-run rate, same layout |
+| `raster_<stream>_<protocol>.pdf` | detector signals per method and seed against the true drift (only if a method has a detector) |
+| `front.pdf` | closed gap against solver CPU, one panel per stream and protocol, one line per method family (its sweep), ci95 error bars |
+| `front_overhead.pdf` | the same with selector and detector time added to x |
+| `table_main_<protocol>.tex` | closed gap, solver CPU, extra-run rate, recovery, drift points not recovered from: mean ± ci95 per method and stream, best in bold |
+| `table_detection_<protocol>.tex` | delay, missed drifts, false alarms of methods with a drift detector |
+
+`--only` takes the part before the stream name (`regret`, `extra_runs`,
+`raster`, `front`, `front_overhead`, `table_main`, `table_detection`).
+Tables are `tabular` environments (booktabs); `\input` them inside a `table`
+with your own caption. Figures are 6.3 in wide (the thesis text width);
+change it with `--width 4.5`, or `width=` when calling the functions in
+`oas_experiments.analysis.plots` directly (call `style.apply()` first for the
+thesis fonts). Colours are fixed per method family, assigned by sorted family
+name, so they stay the same across the figures of one experiment.
 
 ## Final runs
 
