@@ -25,7 +25,7 @@ src/oas_experiments/
   launch.py                 python -m oas_experiments.launch (all missing runs, in parallel)
   results.py                load an experiment into DataFrames
   datasets/                 placeholder: dataset preparation (bin packing, SATCOMP)
-  analysis/                 placeholder: metrics, statistics, plots
+  analysis/                 metrics.py, stats.py (see Metrics); plots
 scripts/                    SLURM job array (submit.sh, slurm_array.sh)
 tests/                      tests, schema-v1 fixture results
 results/                    <experiment>/<run id>/{meta.json, steps.parquet}  (not versioned)
@@ -263,7 +263,84 @@ The state of ASF itself is recorded by ASF as `meta.asf`.
 `collect_runs(dir)` and `collect_steps(dir, columns=[...])` return one of the
 two. Incomplete run directories are skipped with a warning.
 
-Plots and statistics belong in `src/oas_experiments/analysis/`.
+Metrics and statistics: see [Metrics](#metrics).
+
+## Metrics
+
+`oas_experiments.analysis.metrics` and `.stats` compute every number the
+thesis reports from the frames of `load_experiment`. Defaults: `window=50`
+steps, `tolerance=0.1`, `detection_tolerance=100`, `confidence=0.95`. All are
+function parameters. Steps and drift points count from the first evaluated
+instance, so never compare curves across protocols or streams.
+
+```python
+from oas_experiments.analysis import metrics, stats
+
+table = metrics.run_table(results.runs, results.steps)  # one row per run
+summary = metrics.aggregate(table)  # over seeds
+steps = metrics.add_step_metrics(results.steps, results.runs)
+curves = metrics.aggregate_curves(metrics.rolling_curves(steps, "regret"), results.runs)
+```
+
+`load_experiment` also gives per run `maximize` and, as lists in step
+indexing, `drift_points`, `transition_intervals` (half-open `[start, end)`),
+`drift_steps` and `retrain_steps`.
+
+**Per step** (`add_step_metrics`, within each run):
+
+| metric | definition |
+| --- | --- |
+| `regret` | `user_cost - vbs_cost`; `vbs_cost - user_cost` when maximising |
+| `cum_regret` | cumulative sum of `regret` |
+| `extra_run` | 1.0 if more than one algorithm ran (`n_runs > 1`), else 0.0; its mean is `extra_run_rate` |
+| `extra_cpu` | `compute_cost - primary_runtime` (CPU of extra runs; NaN when maximising) |
+| `overhead_seconds` | `selector_seconds + detector_seconds` |
+| `rolling(steps, column, window)` | trailing mean over `window` steps; NaN for the first `window - 1` steps |
+
+**Per drift point** (`drift_metrics`). For a drift point `p`: `end` is the
+next drift point or the end of the stream; `start` is `p`, or for gradual
+drift the end of the transition interval that begins at `p`.
+
+| metric | definition |
+| --- | --- |
+| `pre_level` | mean regret over `[p - window, p)` (shorter at the stream start; NaN at step 0) |
+| `peak_regret` | largest mean regret of a full `window` inside `[p, end)` |
+| `recovery` | `s - start` for the first `s >= start` such that the window `[s, s + window)` lies before `end` and its mean regret is at most `(1 + tolerance) * pre_level` (the trailing rolling regret at `s + window - 1`); 0 = no visible degradation, NaN = never recovered or no `pre_level` |
+| `extra_run_rate_before` / `_after` | share of steps with `n_runs > 1` in `[p - window, p)` / `[p, min(p + window, end))` |
+
+Transition intervals that start inside the warm-start prefix have no drift
+point in the evaluated stream and are ignored.
+
+**Per run** (`run_table`): the config columns, `uses_detector` (the
+selector's `detector` parameter is set), then `closed_gap`,
+`mean_user_cost` (from `OnlineResult.summary()`), `solver_cpu` (total
+`compute_cost`), `extra_cpu`, `overhead_seconds` (totals), `extra_run_rate`
+(share of steps with more than one run), `n_drift_signals`; `mean_delay`,
+`n_missed`, `n_false_alarms` (ASF's `detection_metrics` with
+`detection_tolerance`: a signal in `[p, p + tolerance]` detects `p`; NaN
+without a detector, so a detector that never fires shows all drifts missed);
+`mean_recovery` (over the drift points that recovered), `n_not_recovered`,
+`mean_peak_regret` (over all drift points); then the `param.*` columns. Drift
+metrics are NaN for streams without drift points; CPU metrics are NaN when
+maximising.
+
+**Over seeds** (`aggregate`): grouped by `(stream, protocol, method)` (plus
+`method_family` and `uses_detector`), pooling stream and selector seeds; per metric `<m>_mean`,
+`<m>_std` (ddof 1) and `<m>_ci95` (half-width of the t-interval, NaN for
+fewer than two values), and `n` runs. `aggregate_curves` gives
+`[stream, protocol, method, method_family, uses_detector, step, mean, lo, hi]`
+with
+`lo`/`hi` = mean ∓ CI half-width per step; it refuses groups whose runs have
+different drift points.
+
+**Method comparison** (`stats`): a method's value in a (stream, protocol)
+cell is its mean over seeds; only cells where every method has a value are
+used, so filter the run table to the methods to compare first (offline
+baselines exist only warm). `mean_ranks` (1 = best, ties averaged),
+`friedman` (needs three or more methods), `wilcoxon_vs_reference`
+(two-sided signed-rank test per method against a reference, Holm-corrected
+`p_holm`; `median_diff` = method − reference). With 6 cells the smallest
+exact Wilcoxon p-value is 0.031.
 
 ## Final runs
 

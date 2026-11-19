@@ -143,6 +143,14 @@ def _run_row(result: Any, meta: dict[str, Any]) -> dict[str, Any]:
         "par_factor": meta["par_factor"],
         "cutoff": math.inf if cutoff is None else cutoff,
         "n_evaluated": meta["stream"]["n_evaluated"],
+        "maximize": bool(meta.get("maximize", False)),
+        # Lists in step indexing (they differ between warm and cold protocols).
+        "drift_points": list(meta["stream"]["drift_points"]),
+        "transition_intervals": [
+            list(i) for i in meta["stream"]["transition_intervals"]
+        ],
+        "drift_steps": list(meta["drift_steps"]),
+        "retrain_steps": list(meta["retrain_steps"]),
     }
     summary = dict(result.summary())
     clash = sorted(set(summary) & set(row))

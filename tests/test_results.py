@@ -61,6 +61,16 @@ def test_runs_frame_has_one_row_per_run_with_config_columns():
     assert row["asf_commit"] == "0" * 40 and not row["final"]
 
 
+def test_runs_frame_has_drift_lists():
+    runs = collect_runs(EXPERIMENT).set_index("run_id")
+    row = runs.loc[RUN]
+    assert row["drift_points"] == [25] and row["transition_intervals"] == []
+    assert row["drift_steps"] == [29] and row["retrain_steps"] == [29]
+    assert not row["maximize"]
+    warm = runs.loc["sudden-s0__warm10__ds-ts__seed0"]
+    assert warm["drift_points"] == [15] and warm["drift_steps"] == []
+
+
 def test_runs_frame_metrics_match_the_steps():
     results = load_experiment(EXPERIMENT)
     row = results.runs.set_index("run_id").loc[RUN]
