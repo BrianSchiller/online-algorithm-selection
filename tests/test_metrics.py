@@ -76,12 +76,14 @@ def test_step_metrics_by_hand():
             "primary_runtime": [3.0, 4, 5, 6, 7],
             "selector_seconds": [0.1, 0.2, 0.3, 0.4, 0.5],
             "detector_seconds": [0.01, 0, 0, 0, 0],
+            "n_runs": [1, 2, 1, 1, 3],
         }
     )
     out = add_step_metrics(steps, _runs("r", []))
     assert out["regret"].tolist() == [2, 3, 3, 0, 7]
     assert out["cum_regret"].tolist() == [2, 5, 8, 8, 15]
     assert out["extra_cpu"].tolist() == [2, 0, 5, 0, 0]
+    assert out["extra_run"].tolist() == [0, 1, 0, 0, 1]
     assert out["overhead_seconds"].tolist() == pytest.approx([0.11, 0.2, 0.3, 0.4, 0.5])
     assert "regret" not in steps  # input untouched
 
@@ -96,6 +98,7 @@ def test_step_metrics_maximisation():
             "primary_runtime": [1.0, 2.0],
             "selector_seconds": 0.0,
             "detector_seconds": 0.0,
+            "n_runs": 1,
         }
     )
     runs = _runs("m", []).assign(maximize=True)
@@ -178,7 +181,7 @@ def test_runs_without_drift_points_give_no_rows():
 def test_run_table_on_fixture(fixture):
     table = run_table(fixture.runs, fixture.steps, window=5)
     params = [c for c in fixture.runs if c.startswith("param.")]
-    assert list(table.columns) == CONFIG_COLUMNS + METRICS + params
+    assert list(table.columns) == [*CONFIG_COLUMNS, "uses_detector", *METRICS, *params]
     assert table["run_id"].tolist() == fixture.runs["run_id"].tolist()
     row = table.set_index("run_id").loc[ROOK]
     run = fixture.runs.set_index("run_id").loc[ROOK]
@@ -198,6 +201,22 @@ def test_run_table_on_fixture(fixture):
     assert row["mean_peak_regret"] == drift.set_index("run_id").loc[ROOK, "peak_regret"]
 
 
+def test_detection_metrics_only_for_detector_methods(fixture):
+    runs = fixture.runs.copy()
+    runs["drift_steps"] = [
+        [] if r == ROOK else d
+        for r, d in zip(runs["run_id"], runs["drift_steps"], strict=True)
+    ]
+    table = run_table(runs, fixture.steps, window=5).set_index("run_id")
+    silent = table.loc[ROOK]  # detector that never fires: still reported
+    assert silent["uses_detector"] and silent["n_missed"] == 1
+    assert np.isnan(silent["mean_delay"]) and silent["n_false_alarms"] == 0
+    bandit = table.loc["sudden-s0__cold__ds-ts__seed0"]
+    assert not bandit["uses_detector"]
+    assert bandit[["mean_delay", "n_missed", "n_false_alarms"]].isna().all()
+    assert table["uses_detector"].sum() == 4  # the rook runs
+
+
 def test_run_table_maximisation(fixture):
     runs, steps = fixture.runs.copy(), fixture.steps.copy()
     is_rook = steps["run_id"] == ROOK
@@ -215,15 +234,16 @@ def test_run_table_maximisation(fixture):
 def test_aggregate_over_seeds(fixture):
     table = run_table(fixture.runs, fixture.steps, window=5)
     summary = aggregate(table)
-    assert list(summary.columns[:4]) == [
+    assert list(summary.columns[:5]) == [
         "stream",
         "protocol",
         "method",
         "method_family",
+        "uses_detector",
     ]
     assert summary.columns[-1] == "n"
     assert [f"{m}_{s}" for m in METRICS for s in ("mean", "std", "ci95")] == list(
-        summary.columns[4:-1]
+        summary.columns[5:-1]
     )
     assert len(summary) == 5 and (summary["n"] == 2).all()
     row = summary.set_index(["protocol", "method"]).loc[("cold", "rook")]

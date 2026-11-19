@@ -292,6 +292,7 @@ indexing, `drift_points`, `transition_intervals` (half-open `[start, end)`),
 | --- | --- |
 | `regret` | `user_cost - vbs_cost`; `vbs_cost - user_cost` when maximising |
 | `cum_regret` | cumulative sum of `regret` |
+| `extra_run` | 1.0 if more than one algorithm ran (`n_runs > 1`), else 0.0; its mean is `extra_run_rate` |
 | `extra_cpu` | `compute_cost - primary_runtime` (CPU of extra runs; NaN when maximising) |
 | `overhead_seconds` | `selector_seconds + detector_seconds` |
 | `rolling(steps, column, window)` | trailing mean over `window` steps; NaN for the first `window - 1` steps |
@@ -310,19 +311,21 @@ drift the end of the transition interval that begins at `p`.
 Transition intervals that start inside the warm-start prefix have no drift
 point in the evaluated stream and are ignored.
 
-**Per run** (`run_table`): the config columns, then `closed_gap`,
+**Per run** (`run_table`): the config columns, `uses_detector` (the
+selector's `detector` parameter is set), then `closed_gap`,
 `mean_user_cost` (from `OnlineResult.summary()`), `solver_cpu` (total
 `compute_cost`), `extra_cpu`, `overhead_seconds` (totals), `extra_run_rate`
 (share of steps with more than one run), `n_drift_signals`; `mean_delay`,
 `n_missed`, `n_false_alarms` (ASF's `detection_metrics` with
-`detection_tolerance`: a signal in `[p, p + tolerance]` detects `p`);
+`detection_tolerance`: a signal in `[p, p + tolerance]` detects `p`; NaN
+without a detector, so a detector that never fires shows all drifts missed);
 `mean_recovery` (over the drift points that recovered), `n_not_recovered`,
 `mean_peak_regret` (over all drift points); then the `param.*` columns. Drift
 metrics are NaN for streams without drift points; CPU metrics are NaN when
 maximising.
 
 **Over seeds** (`aggregate`): grouped by `(stream, protocol, method)` (plus
-`method_family`), pooling stream and selector seeds; per metric `<m>_mean`,
+`method_family` and `uses_detector`), pooling stream and selector seeds; per metric `<m>_mean`,
 `<m>_std` (ddof 1) and `<m>_ci95` (half-width of the t-interval, NaN for
 fewer than two values), and `n` runs. `aggregate_curves` gives
 `[stream, protocol, method, method_family, step, mean, lo, hi]` with

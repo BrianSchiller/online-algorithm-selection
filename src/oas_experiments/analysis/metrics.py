@@ -75,7 +75,8 @@ DRIFT_COLUMNS = [
 
 
 def add_step_metrics(steps: pd.DataFrame, runs: pd.DataFrame) -> pd.DataFrame:
-    """Add ``regret``, ``extra_cpu``, ``overhead_seconds`` and ``cum_regret``.
+    """Add ``regret``, ``cum_regret``, ``extra_run``, ``extra_cpu`` and
+    ``overhead_seconds``.
 
     Parameters
     ----------
@@ -88,9 +89,11 @@ def add_step_metrics(steps: pd.DataFrame, runs: pd.DataFrame) -> pd.DataFrame:
     Returns
     -------
     pd.DataFrame
-        A copy of ``steps`` with the four columns added. ``regret`` is
+        A copy of ``steps`` with the five columns added. ``regret`` is
         ``user_cost - vbs_cost`` (``vbs_cost - user_cost`` when maximising), so
-        it is never negative. ``extra_cpu`` is ``compute_cost -
+        it is never negative. ``extra_run`` is 1.0 if more than one algorithm
+        ran (``n_runs > 1``), else 0.0; its mean is ``extra_run_rate``.
+        ``extra_cpu`` is ``compute_cost -
         primary_runtime`` (NaN when maximising), ``overhead_seconds`` is
         ``selector_seconds + detector_seconds``.
     """
@@ -100,6 +103,7 @@ def add_step_metrics(steps: pd.DataFrame, runs: pd.DataFrame) -> pd.DataFrame:
     out = steps.copy()
     sign = np.where(maximize.astype(bool), -1.0, 1.0)
     out["regret"] = sign * (out["user_cost"] - out["vbs_cost"])
+    out["extra_run"] = (out["n_runs"] > 1).astype(float)
     out["extra_cpu"] = out["compute_cost"] - out["primary_runtime"]
     out["overhead_seconds"] = out["selector_seconds"] + out["detector_seconds"]
     out["cum_regret"] = out.groupby("run_id")["regret"].cumsum()
@@ -259,7 +263,11 @@ def run_table(
     tolerance: float = TOLERANCE,
     detection_tolerance: int = DETECTION_TOLERANCE,
 ) -> pd.DataFrame:
-    """One row per run: config columns, :data:`METRICS`, ``param.*`` columns.
+    """One row per run: config columns, ``uses_detector``, :data:`METRICS`, ``param.*``.
+
+    ``uses_detector`` is True when the selector has a drift detector (its
+    ``detector`` parameter is set). Detection metrics (``mean_delay``,
+    ``n_missed``, ``n_false_alarms``) are NaN for runs without one.
 
     ``solver_cpu`` is the total ``compute_cost``, ``extra_cpu`` and
     ``overhead_seconds`` are totals of the step metrics, ``mean_recovery``
@@ -284,15 +292,23 @@ def run_table(
             "n_drift_signals": indexed["n_drift_signals"],
         }
     )
-    derived = derived.join(_detection(runs, detection_tolerance))
+    detector = runs.get("param.detector.class", pd.Series(index=runs.index))
+    uses_detector = pd.Series(detector.notna().to_numpy(), index=runs["run_id"])
+    derived = derived.join(
+        _detection(runs, detection_tolerance).where(uses_detector, axis=0)
+    )
     derived["mean_recovery"] = drift["recovery"].mean()
     derived["mean_peak_regret"] = drift["peak_regret"].mean()
     derived["n_not_recovered"] = drift["recovery"].apply(lambda r: r.isna().sum())
     config = [c for c in CONFIG_COLUMNS if c in runs]
     params = [c for c in runs if c.startswith("param.")]
     return pd.concat(
-        [runs[config], derived[METRICS].reindex(runs["run_id"]).reset_index(drop=True)]
-        + [runs[params]],
+        [
+            runs[config],
+            pd.DataFrame({"uses_detector": uses_detector.to_numpy()}, index=runs.index),
+            derived[METRICS].reindex(runs["run_id"]).set_axis(runs.index),
+            runs[params],
+        ],
         axis=1,
     )
 
@@ -324,13 +340,17 @@ def aggregate(
     Returns
     -------
     pd.DataFrame
-        The group keys (plus ``method_family`` when grouping by ``method``),
+        The group keys (plus ``method_family`` and, if in ``table``,
+        ``uses_detector`` when grouping by ``method``),
         ``<m>_mean``, ``<m>_std``, ``<m>_ci95`` per metric, and ``n`` (runs in
         the group). std uses ddof=1; mean, std and CI skip NaN values, so a
         metric with fewer than two values has NaN std and CI. The column name
         stays ``_ci95`` for any ``confidence``.
     """
-    groups = table.groupby(_keys(by), sort=False)
+    keys = _keys(by)
+    if "method" in keys and "uses_detector" in table:  # constant per method
+        keys.insert(keys.index("method_family") + 1, "uses_detector")
+    groups = table.groupby(keys, sort=False)
     values = groups[list(metrics)]
     mean, std, count = values.mean(), values.std(), values.count()
     ci = _ci(std, count, confidence)
