@@ -158,10 +158,14 @@ def _drift_row(
         if len(segment) >= window
         else np.empty(0)
     )
-    hits = np.flatnonzero(means[start - point :] <= (1 + tolerance) * level)
+    peak = float(means.max()) if len(means) else float("nan")
+    # Recovered once at most `tolerance` of the jump above the pre-drift level
+    # is left; without a jump (peak <= level) that is the level itself.
+    threshold = level + tolerance * max(peak - level, 0.0)
+    hits = np.flatnonzero(means[start - point :] <= threshold)
     return {
         "pre_level": level,
-        "peak_regret": float(means.max()) if len(means) else float("nan"),
+        "peak_regret": peak,
         "recovery": float(hits[0]) if hits.size else float("nan"),
         "extra_run_rate_before": _mean(extra[max(point - window, 0) : point]),
         "extra_run_rate_after": _mean(extra[point : min(point + window, end)]),
@@ -186,9 +190,12 @@ def drift_metrics(
       ``[p, end)``.
     - ``recovery``: ``s - start`` for the first ``s >= start`` whose window
       ``[s, s + window)`` lies inside the segment and has mean regret at most
-      ``(1 + tolerance) * pre_level``. This is the trailing rolling regret at
-      step ``s + window - 1``. 0 means no visible degradation, NaN means
-      never recovered (or no ``pre_level``).
+      ``pre_level + tolerance * (peak_regret - pre_level)``, i.e. all but
+      ``tolerance`` of the jump is gone (the level itself if there is no
+      jump). This is the trailing rolling regret at step ``s + window - 1``.
+      0 means no visible degradation, NaN means never recovered, or not
+      measurable (no ``pre_level``, or the segment is shorter than
+      ``window``).
     - ``extra_run_rate_before`` / ``_after``: share of steps with more than
       one run in ``[p - window, p)`` and ``[p, min(p + window, end))``.
 
@@ -201,7 +208,7 @@ def drift_metrics(
     window
         Window length in steps for all windows above.
     tolerance
-        Relative tolerance on the pre-drift level.
+        Share of the jump above the pre-drift level that may remain.
 
     Returns
     -------
@@ -272,7 +279,9 @@ def run_table(
     ``solver_cpu`` is the total ``compute_cost``, ``extra_cpu`` and
     ``overhead_seconds`` are totals of the step metrics, ``mean_recovery``
     averages the drift points that recovered and ``n_not_recovered`` counts the
-    others; ``mean_peak_regret`` averages all drift points. Detection metrics
+    others (drift points where recovery cannot be measured, e.g. a drift at
+    the first evaluated step, count as neither); ``mean_peak_regret``
+    averages all drift points. Detection metrics
     are recomputed with ``detection_tolerance`` (ASF's ``detection_metrics``).
     Drift metrics are NaN for runs without drift points.
     """
@@ -298,7 +307,9 @@ def run_table(
     )
     derived["mean_recovery"] = drift["recovery"].mean()
     derived["mean_peak_regret"] = drift["peak_regret"].mean()
-    derived["n_not_recovered"] = drift["recovery"].apply(lambda r: r.isna().sum())
+    derived["n_not_recovered"] = drift[["pre_level", "peak_regret", "recovery"]].apply(
+        _not_recovered
+    )
     config = [c for c in CONFIG_COLUMNS if c in runs]
     params = [c for c in runs if c.startswith("param.")]
     return pd.concat(
@@ -310,6 +321,12 @@ def run_table(
         ],
         axis=1,
     )
+
+
+def _not_recovered(drift: pd.DataFrame) -> int:
+    """Drift points with a measurable recovery that never recovered."""
+    measurable = drift["pre_level"].notna() & drift["peak_regret"].notna()
+    return int((measurable & drift["recovery"].isna()).sum())
 
 
 def _uses_detector(runs: pd.DataFrame) -> pd.Series:

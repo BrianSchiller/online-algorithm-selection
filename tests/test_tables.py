@@ -33,7 +33,16 @@ def test_main_table_bolds_best_per_column():
     assert _row(latex, "single")[1] == r"\textbf{0.40}"
     assert _row(latex, "unc-rate0.5")[1] == r"0.31 $\pm$ 0.01"
     rook = _row(latex, "rook")
-    assert not rook[1].startswith(r"\textbf") and rook[2].startswith(r"\textbf")
+    assert not rook[1].startswith(r"\textbf")
+
+
+def test_main_table_does_not_bold_costs():
+    _, latex = tables.main_table(agg_frame(), "warm")
+    for method in ["rook", "single", "unc-rate0.1", "unc-rate0.5"]:
+        row = _row(latex, method)
+        # per stream: closed gap, CPU, extra runs, recovery, not recovered
+        costs = row[2::5] + row[3::5]
+        assert not any(cell.startswith(r"\textbf") for cell in costs), method
 
 
 def test_main_table_missing_ci_and_missing_metric():

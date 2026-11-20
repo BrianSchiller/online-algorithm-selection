@@ -112,24 +112,19 @@ methods:
           params: {rate: 0.25, random_state: "${seed}"}
 
   # --- runtime models (Degroote et al.) -----------------------------------
-  - name: epm                           # one run per instance
+  # rate 0 never runs extras (one run per instance): the start of each curve
+  - name: epm-unc
+    sweep:
+      gate.params.rate: [0, 0.1, 0.25]
     selector:
       class: asf.online.selectors.OnlineEPMSelector
-      params: &epm
-        estimator:
+      params:
+        estimator: &forest
           class: sklearn.ensemble.RandomForestRegressor
           params: {n_estimators: 100, random_state: "${seed}"}
         uncertainty: tree_std
         target_transform: log10
         budget: "${stream.cutoff}"
-
-  - name: epm-unc
-    sweep:
-      gate.params.rate: [0.1, 0.25]
-    selector:
-      class: asf.online.selectors.OnlineEPMSelector
-      params:
-        <<: *epm
         gate:
           class: asf.online.gate.UncertaintyGate
           params: {rate: 0.1, random_state: "${seed}"}
@@ -138,7 +133,10 @@ methods:
     selector:
       class: asf.online.selectors.OnlineEPMSelector
       params:
-        <<: *epm
+        estimator: *forest
+        uncertainty: tree_std
+        target_transform: log10
+        budget: "${stream.cutoff}"
         imputation: {class: asf.online.imputation.ExpectedImputer}
         detector:
           class: asf.online.drift.ADWINDetector
@@ -147,20 +145,14 @@ methods:
         drift_response: {class: asf.online.retraining.RetrainResponse}
 
   # --- bandits ------------------------------------------------------------
-  - name: ds-ts
-    selector:
-      class: asf.online.selectors.DiscountedTSSelector
-      params: &dsts
-        gamma: 0.99
-        budget: "${stream.cutoff}"
-
   - name: ds-ts-unc
     sweep:
-      gate.params.rate: [0.1, 0.25]
+      gate.params.rate: [0, 0.1, 0.25]
     selector:
       class: asf.online.selectors.DiscountedTSSelector
       params:
-        <<: *dsts
+        gamma: 0.99
+        budget: "${stream.cutoff}"
         gate:
           class: asf.online.gate.UncertaintyGate
           params: {rate: 0.1, random_state: "${seed}"}

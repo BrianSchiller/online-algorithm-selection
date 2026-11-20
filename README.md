@@ -41,7 +41,7 @@ repository (`../asf`):
 python -m venv .venv
 .venv\Scripts\activate            # Linux/macOS: source .venv/bin/activate
 pip install -e ".[dev]"           # installs ASF at the pinned commit
-pip install -e "../asf[online]"   # then replaces it with your local clone
+pip install -e "../asf[online,aslib]"   # then replaces it with your local clone
 ```
 
 The order matters: `pip install -e .` installs the pinned ASF and can replace
@@ -306,7 +306,7 @@ drift the end of the transition interval that begins at `p`.
 | --- | --- |
 | `pre_level` | mean regret over `[p - window, p)` (shorter at the stream start; NaN at step 0) |
 | `peak_regret` | largest mean regret of a full `window` inside `[p, end)` |
-| `recovery` | `s - start` for the first `s >= start` such that the window `[s, s + window)` lies before `end` and its mean regret is at most `(1 + tolerance) * pre_level` (the trailing rolling regret at `s + window - 1`); 0 = no visible degradation, NaN = never recovered or no `pre_level` |
+| `recovery` | `s - start` for the first `s >= start` such that the window `[s, s + window)` lies before `end` and its mean regret is at most `pre_level + tolerance * (peak_regret - pre_level)`: all but `tolerance` (default 10%) of the jump is gone (the trailing rolling regret at `s + window - 1`); 0 = no visible degradation, NaN = never recovered, or not measurable (no `pre_level`, segment shorter than `window`) |
 | `extra_run_rate_before` / `_after` | share of steps with `n_runs > 1` in `[p - window, p)` / `[p, min(p + window, end))` |
 
 Transition intervals that start inside the warm-start prefix have no drift
@@ -320,7 +320,8 @@ selector's `detector` parameter is set), then `closed_gap`,
 `n_missed`, `n_false_alarms` (ASF's `detection_metrics` with
 `detection_tolerance`: a signal in `[p, p + tolerance]` detects `p`; NaN
 without a detector, so a detector that never fires shows all drifts missed);
-`mean_recovery` (over the drift points that recovered), `n_not_recovered`,
+`mean_recovery` (over the drift points that recovered), `n_not_recovered`
+(measurable drift points that never recovered),
 `mean_peak_regret` (over all drift points); then the `param.*` columns. Drift
 metrics are NaN for streams without drift points; CPU metrics are NaN when
 maximising.
@@ -361,7 +362,7 @@ Writes, for every stream and protocol in the results:
 | `raster_<stream>_<protocol>.pdf` | detector signals per method and seed against the true drift (only if a method has a detector) |
 | `front.pdf` | closed gap against solver CPU, one panel per stream and protocol, one line per method family (its sweep), ci95 error bars |
 | `front_overhead.pdf` | the same with selector and detector time added to x |
-| `table_main_<protocol>.tex` | closed gap, solver CPU, extra-run rate, recovery, drift points not recovered from: mean ± ci95 per method and stream, best in bold |
+| `table_main_<protocol>.tex` | closed gap, solver CPU, extra-run rate, recovery, drift points not recovered from: mean ± ci95 per method and stream; the best closed gap, recovery and not-recovered count in bold (CPU and extra runs are costs, not bolded) |
 | `table_detection_<protocol>.tex` | delay, missed drifts, false alarms of methods with a drift detector |
 
 `--only` takes the part before the stream name (`regret`, `extra_runs`,
@@ -389,7 +390,7 @@ python -m oas_experiments.run <config> --run-id <id> --final
 - that commit is the one pinned in `pyproject.toml`.
 
 To move the pin, push the ASF commit, change the hash in the
-`asf[online] @ git+...@<hash>` line of `pyproject.toml` and commit. The pin
+`asf[online,aslib] @ git+...@<hash>` line of `pyproject.toml` and commit. The pin
 points at `online-selection` with all Phase 1 packages merged (`ae9fcb5`).
 
 ## Tests

@@ -102,3 +102,50 @@ def test_bad_blocks_are_rejected(minimal_config):
         _stream(minimal_config, bad)
     with pytest.raises(ValueError, match="needs `key`"):
         _stream(minimal_config, {"builder": "sorted"})
+
+
+def test_standardize_uses_the_first_instances_only(minimal_config):
+    raw = _stream(minimal_config, seed=3)
+    minimal_config["streams"][0]["params"]["standardize"] = 10
+    stream = build_stream(parse_config(minimal_config).runs[0])
+    assert list(stream.features.index) == list(raw.features.index)
+    head = stream.features.iloc[:10]
+    assert np.allclose(head.mean(), 0) and np.allclose(head.std(ddof=0), 1)
+    assert not np.allclose(stream.features.iloc[10:].mean(), 0)
+    assert stream.performance.equals(raw.performance)
+
+
+def test_standardize_imputes_and_keeps_constant_features(minimal_config):
+    from oas_experiments.streams import standardize
+
+    stream = _stream(minimal_config)
+    stream.features.iloc[0, 0] = np.nan
+    stream.features["const"] = 4.0
+    standardize(stream, 5)
+    assert not stream.features.isna().any().any()
+    assert (stream.features["const"] == 0).all()
+
+
+@pytest.mark.parametrize("bad", [0, 31, 2.5, True])
+def test_bad_standardize(minimal_config, bad):
+    minimal_config["streams"] = [
+        {
+            "name": "sat",
+            "kind": "aslib",
+            "params": {"root": "x", "scenarios": ["HAND"], "standardize": bad},
+        }
+    ]
+    with pytest.raises(ValueError, match="standardize"):
+        build_stream(parse_config(minimal_config).runs[0])
+
+
+def test_unknown_aslib_parameter(minimal_config):
+    minimal_config["streams"] = [
+        {
+            "name": "sat",
+            "kind": "aslib",
+            "params": {"root": "x", "scenarios": ["HAND"], "scale": 1},
+        }
+    ]
+    with pytest.raises(ValueError, match="scale"):
+        build_stream(parse_config(minimal_config).runs[0])

@@ -3,7 +3,8 @@
 Each table function returns ``(frame, latex)``: the numbers as a DataFrame
 (index: method; columns: stream, metric, ``mean``/``ci95``) and a
 ``tabular`` environment to ``\\input`` inside a ``table``. Cells read
-"mean ± ci95"; the best mean per column is bold.
+"mean ± ci95"; the best mean per quality column is bold (costs such as CPU
+and extra runs are traded against quality, so they have no "best").
 """
 
 from __future__ import annotations
@@ -11,11 +12,11 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-# metric -> (column header, whether higher is better)
+# metric -> (column header, whether higher is better; None = no bold)
 MAIN_METRICS = {
     "closed_gap": ("Closed gap", True),
-    "solver_cpu": ("Solver CPU", False),
-    "extra_run_rate": ("Extra runs", False),
+    "solver_cpu": ("Solver CPU", None),
+    "extra_run_rate": ("Extra runs", None),
     "mean_recovery": ("Recovery", False),
     # Recovery averages only recovered drift points, so show the others too.
     "n_not_recovered": ("Not recovered", False),
@@ -58,7 +59,7 @@ def detection_table(
 
 
 def _table(
-    data: pd.DataFrame, metrics: dict[str, tuple[str, bool]], digits: int
+    data: pd.DataFrame, metrics: dict[str, tuple[str, bool | None]], digits: int
 ) -> tuple[pd.DataFrame, str]:
     methods = data.sort_values(["method_family", "method"])["method"].unique()
     streams = sorted(data["stream"].unique())
@@ -84,7 +85,7 @@ def _table(
 def _latex(
     frame: pd.DataFrame,
     streams: list[str],
-    metrics: dict[str, tuple[str, bool]],
+    metrics: dict[str, tuple[str, bool | None]],
     digits: int,
 ) -> str:
     k = len(metrics)
@@ -92,7 +93,8 @@ def _latex(
     for stream in streams:
         for metric, (_, higher) in metrics.items():
             means = frame[(stream, metric, "mean")]
-            best[(stream, metric)] = means.max() if higher else means.min()
+            if higher is not None:
+                best[(stream, metric)] = means.max() if higher else means.min()
 
     lines = [
         rf"\begin{{tabular}}{{l{'r' * k * len(streams)}}}",
@@ -119,7 +121,7 @@ def _latex(
                         mean,
                         row[(stream, metric, "ci95")],
                         digits,
-                        bold=mean == best[(stream, metric)],
+                        bold=mean == best.get((stream, metric)),
                     )
                 )
         lines.append(" & ".join(cells) + r" \\")

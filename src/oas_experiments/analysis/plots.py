@@ -62,7 +62,10 @@ def _curves(
     methods: list[str] | None,
     ax: Axes | None,
     width: float,
+    bounds: tuple[float | None, float | None] = (None, None),
 ) -> tuple[Figure, Axes]:
+    """Mean line and CI band per method; the band is clipped to ``bounds``
+    (the range the value can take, e.g. regret >= 0)."""
     fig, ax = _axes(ax, width)
     data = _select(curves, stream, protocol)
     if methods is not None:
@@ -82,8 +85,8 @@ def _curves(
             )
             ax.fill_between(
                 line["step"],
-                line["lo"],
-                line["hi"],
+                line["lo"].clip(*bounds),
+                line["hi"].clip(*bounds),
                 color=style["color"],
                 alpha=0.2,
                 lw=0,
@@ -121,7 +124,9 @@ def regret_curves(
     width
         Figure width in inches if a new figure is created.
     """
-    return _curves(curves, runs, stream, protocol, "Rolling regret", methods, ax, width)
+    return _curves(
+        curves, runs, stream, protocol, "Rolling regret", methods, ax, width, (0, None)
+    )
 
 
 def extra_run_rate(
@@ -136,7 +141,9 @@ def extra_run_rate(
 ) -> tuple[Figure, Axes]:
     """Extra-run rate over time; same layout and parameters as
     :func:`regret_curves`, with the extra-run-rate curves as ``curves``."""
-    return _curves(curves, runs, stream, protocol, "Extra-run rate", methods, ax, width)
+    return _curves(
+        curves, runs, stream, protocol, "Extra-run rate", methods, ax, width, (0, 1)
+    )
 
 
 def cost_quality_front(
@@ -293,7 +300,9 @@ def detection_raster(
     )
     if len(data):
         ax.set_ylim(len(data) - 0.5, -0.5)
-    ax.set_xlim(left=0)
+    # the whole evaluated stream, not just up to the last signal
+    end = selected["n_evaluated"].max() if "n_evaluated" in selected else None
+    ax.set_xlim(0, None if pd.isna(end) else end)
     ax.grid(False, axis="y")
     ax.set(xlabel="Step", title=f"{stream}, {protocol}")
     return fig, ax

@@ -61,6 +61,24 @@ def test_regret_curves_family_shares_colour_and_varies_style():
     assert a.get_linestyle() != b.get_linestyle()
 
 
+def _band_ys(ax):
+    """y values of all CI bands (single-seed methods have none)."""
+    return np.concatenate(
+        [p.vertices[:, 1] for c in ax.collections for p in c.get_paths()]
+    )
+
+
+def test_bands_are_clipped_to_the_possible_range():
+    curves = curves_frame()  # the first method has mean 0 and lo = -0.05
+    _, ax = plots.regret_curves(curves, runs_frame(), "switch", "warm")
+    lowest = _band_ys(ax).min()
+    assert lowest == 0
+    curves["hi"] += 1  # above a rate of 1
+    _, ax = plots.extra_run_rate(curves, runs_frame(), "switch", "warm")
+    highest = _band_ys(ax).max()
+    assert highest == 1
+
+
 def test_curves_without_drift_and_method_filter():
     _, ax = plots.extra_run_rate(
         curves_frame(), runs_frame(), "calm", "cold", methods=["rook"]
@@ -156,6 +174,12 @@ def test_raster_rows_are_detector_runs():
     assert [list(e.get_positions()) for e in events] == [[105, 210], [105, 211]]
     assert [t.get_text() for t in ax.get_yticklabels()] == ["rook s0", "rook s1"]
     assert len(_vlines(ax)) == 2 and len(ax.patches) == 1
+
+
+def test_raster_spans_the_evaluated_stream():
+    runs = runs_frame().assign(n_evaluated=400)
+    _, ax = plots.detection_raster(runs, "switch", "warm")
+    assert ax.get_xlim() == (0, 400)
 
 
 def test_raster_stream_without_drift_points():

@@ -133,6 +133,18 @@ def test_recovery_at_step_k():
     assert (row["start"], row["end"]) == (4, 11)
 
 
+def test_recovery_from_a_near_zero_level():
+    # level 0, peak 2: recovered once the window mean is at most 0.2
+    row = _drift([0, 0, 0, 0, 2, 2, 0.1, 0.1, 0.1], [4]).loc[4]
+    assert row["pre_level"] == 0 and row["peak_regret"] == 2
+    assert row["recovery"] == 2
+
+
+def test_no_jump_recovers_at_once():
+    row = _drift([2, 2, 2, 2, 1, 1, 1, 1], [4]).loc[4]
+    assert row["recovery"] == 0
+
+
 def test_no_recovery_is_nan():
     row = _drift([1, 1, 1, 1, 5, 5, 5, 5], [4]).loc[4]
     assert np.isnan(row["recovery"]) and row["peak_regret"] == 5
@@ -199,6 +211,14 @@ def test_run_table_on_fixture(fixture):
     drift = drift_metrics(fixture.steps, fixture.runs, window=5)
     assert len(drift) == 10
     assert row["mean_peak_regret"] == drift.set_index("run_id").loc[ROOK, "peak_regret"]
+
+
+def test_unmeasurable_recovery_is_not_counted_as_not_recovered(fixture):
+    runs = fixture.runs.copy()
+    runs["drift_points"] = [[0]] * len(runs)  # no pre-drift level anywhere
+    table = run_table(runs, fixture.steps, window=5)
+    assert (table["n_not_recovered"] == 0).all()
+    assert table["mean_recovery"].isna().all()
 
 
 def test_detection_metrics_only_for_detector_methods(fixture):

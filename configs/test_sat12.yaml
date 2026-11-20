@@ -1,0 +1,103 @@
+# First test experiment: the setting of ASF's examples/online/4_aslib_sat12.py
+# run through the experiment pipeline (configs, runner, metrics, figures).
+#
+# SAT12-HAND, -INDU and -RAND (same 115 features, 31 solvers, cutoff 1200)
+# played as half of each scenario, then the other halves: five sudden switches
+# with recurring scenarios. Features are imputed and standardised with the
+# first 100 instances (no runtimes), so the linear bandits get usable contexts.
+#
+#   python -m oas_experiments.launch configs/test_sat12.yaml --jobs 8
+#   python -m oas_experiments.figures results/test_sat12 --out figures/test_sat12
+name: test_sat12
+
+evaluation:
+  par_factor: 10.0
+  result_mode: best_of_scheduled
+
+seeds: [0]
+
+protocols:
+  - {name: warm100, type: warm, n_warmstart: 100}
+  - {name: cold, type: cold}
+
+streams:
+  - name: sat12-halves
+    kind: aslib
+    seeds: [0]
+    params:
+      root: ../../aslib_data
+      scenarios: [SAT12-HAND, SAT12-INDU, SAT12-RAND]
+      standardize: 100
+    drift:
+      builder: grouped
+      params:
+        labels: scenario
+        schedule: [SAT12-HAND, SAT12-INDU, SAT12-RAND, SAT12-HAND, SAT12-INDU, SAT12-RAND]
+
+methods:
+  # --- offline baseline (warm start only) -------------------------------
+  - name: static-multiclass
+    protocols: [warm100]
+    selector:
+      class: asf.online.selectors.StaticOnlineSelector
+      params:
+        selector:
+          class: asf.selectors.MultiClassClassifier
+          params: {random_state: "${seed}"}
+
+  # --- bandits: one run per instance --------------------------------------
+  - name: ucb
+    selector:
+      class: asf.online.selectors.UCBSelector
+      params: {budget: "${stream.cutoff}"}
+
+  - name: ts
+    selector:
+      class: asf.online.selectors.ThompsonSamplingSelector
+      params: {budget: "${stream.cutoff}"}
+
+  - name: linucb
+    selector:
+      class: asf.online.selectors.LinUCBSelector
+      params: {budget: "${stream.cutoff}"}
+
+  - name: lints
+    selector:
+      class: asf.online.selectors.LinTSSelector
+      params: {budget: "${stream.cutoff}"}
+
+  # --- pairwise: Rook et al. (always two runs), retrained every 100 ---------
+  - name: online-pairwise
+    selector:
+      class: asf.online.selectors.OnlinePairwiseSelector
+      params:
+        reference_period: 0
+        retrain_policy:
+          class: asf.online.retraining.PeriodicRetrain
+          params: {every: 100}
+
+  # --- frugal: a second run only for the runner-up, when unsure -----------
+  - name: frugal
+    selector:
+      class: asf.online.selectors.FrugalPairwiseSelector
+      params: {candidate_order: runner_up}
+
+  # As frugal, plus a KS drift detector (fitted after 100 instances): on the
+  # instance after a drift signal all solvers run once, then the detector
+  # takes the last 100 instances as its new reference.
+  - name: frugal-ks
+    selector:
+      class: asf.online.selectors.FrugalPairwiseSelector
+      params:
+        candidate_order: runner_up
+        gate:
+          class: asf.online.gate.ProbeAllAfterDrift
+          params:
+            gate:
+              class: asf.online.gate.UncertaintyGate
+              params: {threshold: 0.25, n: 1}
+        detector:
+          class: asf.online.drift.KSSubspaceEnsembleDetector
+          params: {reference_size: 100, random_state: "${seed}"}
+        detector_reference_size: 100
+        drift_response: {class: asf.online.retraining.response.RereferenceResponse}
