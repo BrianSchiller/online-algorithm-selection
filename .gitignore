@@ -21,3 +21,6 @@ dist/
 *.pdf
 *.tex
 *.png
+
+# reports are produced from results
+/reports/

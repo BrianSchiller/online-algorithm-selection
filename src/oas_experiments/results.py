@@ -144,6 +144,14 @@ def _run_row(result: Any, meta: dict[str, Any]) -> dict[str, Any]:
         "cutoff": math.inf if cutoff is None else cutoff,
         "n_evaluated": meta["stream"]["n_evaluated"],
         "maximize": bool(meta.get("maximize", False)),
+        # Stream description for reports (equal for all runs of a stream).
+        "n_instances": meta["stream"]["n_instances"],
+        "n_features": meta["stream"]["n_features"],
+        "n_algorithms": len(meta["stream"]["algorithms"]),
+        "sbs_algorithm_stream": meta.get("sbs_algorithm_stream"),
+        "sbs_algorithm_warmstart": meta.get("sbs_algorithm_warmstart"),
+        "stream_params": run["stream"].get("params") or {},
+        "stream_drift": run["stream"].get("drift"),
         # Lists in step indexing (they differ between warm and cold protocols).
         "drift_points": list(meta["stream"]["drift_points"]),
         "transition_intervals": [
@@ -158,7 +166,11 @@ def _run_row(result: Any, meta: dict[str, Any]) -> dict[str, Any]:
         raise ResultError(f"summary() keys clash with config columns: {clash}")
     row.update(summary)
     for column, source in _TOTALS.items():
-        row[column] = float(result.steps[source].sum(skipna=False))
+        # TODO:
+        # shortcut: timing NaNs (a one-off ASF glitch) are skipped; costs stay
+        # strict. Drop the skip once no result contains NaN timings.
+        timing = source.endswith("_seconds")
+        row[column] = float(result.steps[source].sum(skipna=timing))
     row.update(
         {
             "final": extra.get("final"),
@@ -167,6 +179,10 @@ def _run_row(result: Any, meta: dict[str, Any]) -> dict[str, Any]:
             "asf_commit": meta["asf"]["commit"],
             "asf_dirty": meta["asf"]["dirty"],
             "created_utc": meta["created_utc"],
+            "config_file": (extra.get("experiment") or {}).get("config_file"),
+            "config_hash": (extra.get("experiment") or {}).get("config_hash"),
+            "environment": extra.get("environment"),
+            "selector_config": run["method"]["selector"],
         }
     )
     row.update(flatten_params(run["method"]["selector"].get("params") or {}))

@@ -25,7 +25,7 @@ import pandas as pd
 from matplotlib.figure import Figure
 
 from oas_experiments.analysis import metrics, plots, style, tables
-from oas_experiments.results import ResultError, load_experiment
+from oas_experiments.results import ExperimentResults, ResultError, load_experiment
 
 NAMES = (
     "regret",
@@ -48,8 +48,12 @@ class Frames(NamedTuple):
 
 
 def d2_frames(experiment_dir: str | Path) -> Frames:
-    """Load an experiment and compute the D2 frames (the only caller of D2)."""
-    results = load_experiment(experiment_dir)
+    """Load an experiment and compute the D2 frames."""
+    return frames_from(load_experiment(experiment_dir))
+
+
+def frames_from(results: ExperimentResults) -> Frames:
+    """The D2 frames of already loaded results."""
     steps = metrics.add_step_metrics(results.steps, results.runs)
     table = metrics.run_table(results.runs, results.steps)
     by = ("stream", "protocol", "protocol_type", "method")  # protocol_type: markers

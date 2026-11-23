@@ -27,6 +27,7 @@ src/oas_experiments/
   datasets/                 placeholder: dataset preparation (bin packing, SATCOMP)
   analysis/                 metrics.py, stats.py (see Metrics); plots.py, tables.py, style.py
   figures.py                python -m oas_experiments.figures (all figures and tables)
+  report.py                 python -m oas_experiments.report  (LaTeX/PDF report of an experiment)
 scripts/                    SLURM job array (submit.sh, slurm_array.sh)
 tests/                      tests, schema-v1 fixture results
 results/                    <experiment>/<run id>/{meta.json, steps.parquet}  (not versioned)
@@ -256,7 +257,10 @@ The state of ASF itself is recorded by ASF as `meta.asf`.
   `mean_user_cost`, `mean_compute_cost`, ...), totals over the stream
   (`total_compute_cost`, `total_user_cost`, `total_selector_seconds`,
   `total_detector_seconds`), provenance (`final`, `repo_commit`, `asf_commit`,
-  ...), and the selector parameters as `param.*` columns
+  `config_hash`, `environment`, ...), the stream description (`n_instances`,
+  `n_features`, `n_algorithms`, `sbs_algorithm_stream`,
+  `sbs_algorithm_warmstart`, `stream_params`, `stream_drift`), the resolved
+  `selector_config`, and the selector parameters as `param.*` columns
   (`param.gamma`, `param.detector.chunk_size`).
 - `steps`: the per-step frames of all runs stacked, with `run_id` as the
   first column. Join with `runs` on `run_id`.
@@ -373,6 +377,48 @@ change it with `--width 4.5`, or `width=` when calling the functions in
 `oas_experiments.analysis.plots` directly (call `style.apply()` first for the
 thesis fonts). Colours are fixed per method family, assigned by sorted family
 name, so they stay the same across the figures of one experiment.
+
+## Report
+
+A full LaTeX report of one experiment, compiled to PDF if `latexmk` is
+installed:
+
+```
+python -m oas_experiments.report results/test_sat12 --out reports/test_sat12
+python -m oas_experiments.report results/test_sat12 --out reports/x --sections overview,stream,performance
+python -m oas_experiments.report results/test_sat12 --out reports/x --no-pdf
+python -m oas_experiments.report results/test_sat12 --out reports/test_sat12 --per-protocol
+```
+
+`--per-protocol` writes one report per protocol to `<out>/<protocol>/`
+(`report.restrict(ctx, protocol)`); each method family keeps its colour across
+them (`style.pin_families`).
+
+It writes `report.tex`, one `sections/<name>.tex` per section (each can be
+`\input` into the thesis on its own), `figures/*.pdf` and `report.pdf`.
+Sections, in order:
+
+| section | content |
+| --- | --- |
+| `overview` | experiment grid, evaluation and metric settings, provenance (warns if runs are not final or dirty) |
+| `stream` | per stream: construction (kind, params, drift builder, schedule, instances, SBS); per protocol: drift points, a segment table (most frequent VBS, VBS/SBS cost, unsolved share), oracle costs over time, oracle-best algorithm per segment |
+| `methods` | method, family, class, protocols, parameters set in the config |
+| `performance` | per protocol a cost table (closed gap, mean cost, total solver runs incl. extra runs, runs per instance, extra-run rate, CPU, overhead, retrains) and the main table; the fronts; per stream and protocol cumulative regret, solver runs per instance, primary choice per method against the VBS |
+| `drift` | detection tables; per stream and protocol with drift: regret and extra-run curves, detection raster, closed gap per segment, and per drift point recovery, peak regret and change of the extra-run rate |
+| `statistics` | mean ranks, Friedman, Wilcoxon against `online-pairwise` (else the best-ranked method) over the (stream, protocol) cells every method has; only a note below three cells or methods |
+| `appendix` | every run, and the resolved selector config of every method |
+
+A section is a function `(ctx, out) -> str` that returns LaTeX and saves its
+figures with `out.figure(fig, name, caption)`. To change the report for
+another scenario, pass other section names to `report.write_report`, or add a
+function to `report.SECTIONS`. All frames come from `report.load(dir)`
+(`Context`: runs, steps, the D2 frames, run table, aggregates per method,
+segment and drift point, cumulative-regret curves).
+
+Segments are the stretches between drift points (`metrics.segments`,
+`metrics.segment_metrics`). They are named from the `schedule` of a `grouped`
+drift block, dropping leading entries that the warm start used up, and `S1 ..
+Sn` otherwise. The per-segment closed gap uses the SBS of the whole stream.
 
 ## Final runs
 

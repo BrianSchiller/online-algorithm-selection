@@ -306,3 +306,231 @@ def detection_raster(
     ax.grid(False, axis="y")
     ax.set(xlabel="Step", title=f"{stream}, {protocol}")
     return fig, ax
+
+
+# --- report figures -------------------------------------------------------
+
+SEQUENTIAL = "Blues"  # one hue, light to dark: shares and counts
+
+
+def cumulative_regret(
+    curves: pd.DataFrame,
+    runs: pd.DataFrame,
+    stream: str,
+    protocol: str,
+    *,
+    methods: list[str] | None = None,
+    ax: Axes | None = None,
+    width: float = WIDTH,
+) -> tuple[Figure, Axes]:
+    """Cumulative regret over time; same layout and parameters as
+    :func:`regret_curves`, with cumulative-regret curves as ``curves``."""
+    return _curves(
+        curves,
+        runs,
+        stream,
+        protocol,
+        "Cumulative regret",
+        methods,
+        ax,
+        width,
+        (0, None),
+    )
+
+
+def _stream_steps(
+    steps: pd.DataFrame, runs: pd.DataFrame, stream: str, protocol: str
+) -> pd.DataFrame:
+    """Steps of one stream and protocol with ``method`` and ``seed`` joined on."""
+    selected = _select(runs, stream, protocol)[["run_id", "method", "seed"]]
+    return steps.merge(selected, on="run_id")
+
+
+def first_run(
+    steps: pd.DataFrame, runs: pd.DataFrame, stream: str, protocol: str
+) -> tuple[pd.Series, pd.DataFrame]:
+    """One run and its steps; for columns that do not depend on the selector
+    (VBS, SBS), which all runs of a stream and protocol share."""
+    run = _select(runs, stream, protocol).sort_values("run_id").iloc[0]
+    return run, steps[steps["run_id"] == run["run_id"]].sort_values("step")
+
+
+def run_count_shares(
+    steps: pd.DataFrame,
+    runs: pd.DataFrame,
+    stream: str,
+    protocol: str,
+    max_runs: int = 4,
+) -> pd.DataFrame:
+    """Share of instances with 1, 2, ... solver runs per method (rows sum to 1).
+
+    Counts above ``max_runs`` go into the column ``max_runs``; seeds are pooled.
+    """
+    data = _stream_steps(steps, runs, stream, protocol)
+    counts = data["n_runs"].clip(upper=max_runs)
+    shares = pd.crosstab(data["method"], counts, normalize="index")
+    return shares.reindex(columns=range(1, max_runs + 1), fill_value=0.0)
+
+
+def runs_per_instance(
+    steps: pd.DataFrame,
+    runs: pd.DataFrame,
+    stream: str,
+    protocol: str,
+    *,
+    max_runs: int = 4,
+    ax: Axes | None = None,
+    width: float = WIDTH,
+) -> tuple[Figure, Axes]:
+    """Stacked bar per method: share of instances with 1, 2, ..., >= ``max_runs``
+    solver runs (see :func:`run_count_shares`)."""
+    shares = run_count_shares(steps, runs, stream, protocol, max_runs)
+    fig, ax = _axes(ax, width, aspect=0.12 + 0.05 * len(shares))
+    colors = plt.get_cmap(SEQUENTIAL)(np.linspace(0.3, 0.9, max_runs))
+    left = np.zeros(len(shares))
+    for k, color in zip(shares.columns, colors, strict=True):
+        label = f"$\\geq${k}" if k == max_runs else str(k)
+        ax.barh(
+            shares.index,
+            shares[k],
+            left=left,
+            color=color,
+            label=label,
+            edgecolor="white",
+            linewidth=0.5,
+        )
+        left += shares[k].to_numpy()
+    ax.set_xlim(0, 1)
+    ax.invert_yaxis()
+    ax.grid(False, axis="y")
+    ax.set(
+        xlabel="Share of instances",
+        title=f"{stream}, {protocol}: solver runs per instance",
+    )
+    ax.legend(title="Runs", loc="upper left", bbox_to_anchor=(1.01, 1))
+    return fig, ax
+
+
+def _heatmap(ax: Axes, frame: pd.DataFrame, label: str) -> None:
+    """Shares in [0, 1] as cells, with the value printed where it is visible."""
+    image = ax.imshow(
+        frame.to_numpy(float), cmap=SEQUENTIAL, vmin=0, vmax=1, aspect="auto"
+    )
+    ax.set_xticks(range(frame.shape[1]), frame.columns, rotation=60, ha="right")
+    ax.set_yticks(range(frame.shape[0]), frame.index)
+    ax.grid(False)
+    for (i, j), value in np.ndenumerate(frame.to_numpy(float)):
+        if value >= 0.05:
+            ax.text(
+                j,
+                i,
+                f"{value:.2f}",
+                ha="center",
+                va="center",
+                fontsize=6,
+                color="white" if value > 0.6 else "0.15",
+            )
+    ax.figure.colorbar(image, ax=ax, label=label, shrink=0.8)
+
+
+def _top_columns(frame: pd.DataFrame, top: int) -> pd.DataFrame:
+    """Keep the ``top`` columns with the largest share; sum the rest as other."""
+    order = frame.max().sort_values(ascending=False).index
+    kept = frame[order[:top]]
+    if len(order) > top:
+        kept = kept.assign(other=frame[order[top:]].sum(axis=1))
+    return kept
+
+
+def selection_heatmap(
+    steps: pd.DataFrame,
+    runs: pd.DataFrame,
+    stream: str,
+    protocol: str,
+    *,
+    top: int = 12,
+    ax: Axes | None = None,
+    width: float = WIDTH,
+) -> tuple[Figure, Axes]:
+    """Share of instances on which each algorithm was the primary choice, per
+    method (seeds pooled), with the oracle-best algorithm (VBS) as first row.
+    The ``top`` algorithms with the largest share are shown, the rest as other.
+    """
+    data = _stream_steps(steps, runs, stream, protocol)
+    chosen = pd.crosstab(data["method"], data["primary"], normalize="index")
+    _, first = first_run(steps, runs, stream, protocol)
+    vbs = first["vbs_algorithm"].value_counts(normalize=True).rename("VBS")
+    frame = pd.concat([vbs.to_frame().T, chosen]).fillna(0.0)
+    frame = _top_columns(frame, top)
+    fig, ax = _axes(ax, width, aspect=0.15 + 0.05 * len(frame))
+    _heatmap(ax, frame, "Share of instances")
+    ax.set(title=f"{stream}, {protocol}: primary choice", xlabel="Algorithm")
+    return fig, ax
+
+
+def oracle_costs(
+    steps: pd.DataFrame,
+    runs: pd.DataFrame,
+    stream: str,
+    protocol: str,
+    *,
+    window: int = 50,
+    ax: Axes | None = None,
+    width: float = WIDTH,
+) -> tuple[Figure, Axes]:
+    """Rolling mean cost of the VBS and the stream SBS (log scale), with the
+    drift points and transition intervals of the stream."""
+    fig, ax = _axes(ax, width, aspect=0.35)
+    _drift_background(ax, _select(runs, stream, protocol))
+    _, first = first_run(steps, runs, stream, protocol)
+    for column, label, color in (
+        ("sbs_cost", "SBS", "0.45"),
+        ("vbs_cost", "VBS", "#0072B2"),
+    ):
+        ax.plot(
+            first["step"],
+            first[column].rolling(window, min_periods=1).mean(),
+            color=color,
+            label=label,
+        )
+    ax.set_yscale("log")
+    ax.set(
+        xlabel="Step",
+        ylabel=f"Cost (rolling mean, {window})",
+        title=f"{stream}, {protocol}: oracle costs",
+    )
+    _legend(ax)
+    return fig, ax
+
+
+def segment_oracle_share(
+    steps: pd.DataFrame,
+    runs: pd.DataFrame,
+    stream: str,
+    protocol: str,
+    *,
+    top: int = 10,
+    ax: Axes | None = None,
+    width: float = WIDTH,
+) -> tuple[Figure, Axes]:
+    """Share of instances per segment on which each algorithm is the VBS: what
+    changes at each drift point. The ``top`` algorithms, the rest as other."""
+    from oas_experiments.analysis.metrics import segments, step_segments
+
+    run, first = first_run(steps, runs, stream, protocol)
+    run_frame = run.to_frame().T
+    first = first.assign(segment=step_segments(first, run_frame))
+    frame = pd.crosstab(first["segment"], first["vbs_algorithm"], normalize="index")
+    seg = segments(run_frame).set_index("segment")
+    frame.index = [
+        f"{seg.at[i, 'label']} [{seg.at[i, 'start']}, {seg.at[i, 'end']})"
+        for i in frame.index
+    ]
+    frame = _top_columns(frame, top)
+    fig, ax = _axes(ax, width, aspect=0.15 + 0.05 * len(frame))
+    _heatmap(ax, frame, "Share of instances")
+    ax.set(
+        title=f"{stream}, {protocol}: oracle-best algorithm per segment",
+        xlabel="Algorithm",
+    )
+    return fig, ax

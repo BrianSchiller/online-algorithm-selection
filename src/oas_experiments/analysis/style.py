@@ -55,14 +55,26 @@ def apply() -> None:
     mpl.rcParams.update(RC)
 
 
+_pinned: frozenset[str] = frozenset()
+
+
+def pin_families(families: Iterable[str]) -> None:
+    """Always assign colours over these families too, so figures drawn from a
+    subset (e.g. one protocol) keep each family's colour of the whole
+    experiment."""
+    global _pinned
+    _pinned = frozenset(families)
+
+
 def family_styles(families: Iterable[str]) -> dict[str, dict]:
-    """Colour, first line style and marker fill per family, by sorted name.
+    """Colour, first line style and marker fill per family, by sorted name
+    (over ``families`` and the families of :func:`pin_families`).
 
     Families after the eighth reuse the colours with a different first line
     style and hollow markers, so no two families look the same.
     """
     styles = {}
-    for i, family in enumerate(sorted(set(families))):
+    for i, family in enumerate(sorted(set(families) | _pinned)):
         styles[family] = {
             "color": PALETTE[i % len(PALETTE)],
             "dash": i // len(PALETTE),

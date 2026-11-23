@@ -421,3 +421,93 @@ def aggregate_curves(
     ci = _ci(values.std(), values.count(), confidence)
     out = pd.DataFrame({"mean": mean, "lo": mean - ci, "hi": mean + ci})
     return out.reset_index()
+
+
+SEGMENT_COLUMNS = ["run_id", "segment", "label", "start", "end", "length"]
+SEGMENT_METRICS = [
+    "closed_gap",
+    "mean_user_cost",
+    "mean_vbs_cost",
+    "mean_sbs_cost",
+    "extra_run_rate",
+    "mean_runs",
+]
+
+
+def segment_labels(drift: dict | None, n_segments: int) -> list[str]:
+    """Names of the segments between drift points.
+
+    Taken from the ``schedule`` of a ``grouped`` drift block (a mixing entry
+    ``[A, B]`` reads ``A→B``). A warm start can swallow the first entries, so
+    the last ``n_segments`` entries are used. Otherwise ``S1 .. Sn``.
+    """
+    drift = drift if isinstance(drift, dict) else {}  # None or NaN from a frame
+    schedule = (drift.get("params") or {}).get("schedule")
+    if drift.get("builder") == "grouped" and schedule:
+        if len(schedule) >= n_segments:
+            return [
+                "→".join(map(str, e)) if isinstance(e, list) else str(e)
+                for e in schedule[len(schedule) - n_segments :]
+            ]
+    return [f"S{i + 1}" for i in range(n_segments)]
+
+
+def segments(runs: pd.DataFrame) -> pd.DataFrame:
+    """One row per run and segment between drift points: :data:`SEGMENT_COLUMNS`.
+
+    Segment ``i`` covers the steps ``[start, end)``; the first starts at 0,
+    the last ends at ``n_evaluated``. Labels: :func:`segment_labels` with the
+    run's ``stream_drift`` block (``S1 ..`` if the runs frame has none).
+    """
+    rows = []
+    for _, run in runs.iterrows():
+        bounds = [0, *run["drift_points"], int(run["n_evaluated"])]
+        labels = segment_labels(run.get("stream_drift"), len(bounds) - 1)
+        for i, (start, end) in enumerate(zip(bounds[:-1], bounds[1:], strict=True)):
+            rows.append((run["run_id"], i, labels[i], start, end, end - start))
+    return pd.DataFrame(rows, columns=SEGMENT_COLUMNS)
+
+
+def step_segments(steps: pd.DataFrame, runs: pd.DataFrame) -> pd.Series:
+    """Segment index of every step (number of drift points at or before it)."""
+    points = runs.set_index("run_id")["drift_points"]
+    out = pd.Series(0, index=steps.index, dtype=int)
+    for run_id, idx in steps.groupby("run_id", sort=False).groups.items():
+        out[idx] = np.searchsorted(
+            points[run_id], steps.loc[idx, "step"].to_numpy(), side="right"
+        )
+    return out
+
+
+def segment_metrics(steps: pd.DataFrame, runs: pd.DataFrame) -> pd.DataFrame:
+    """Per run and segment: :data:`SEGMENT_COLUMNS` plus :data:`SEGMENT_METRICS`.
+
+    ``closed_gap`` uses the mean costs inside the segment and the SBS of the
+    whole stream (the ``sbs_cost`` column), like the headline closed gap.
+    ``mean_runs`` is the mean number of solver runs per instance.
+    """
+    from asf.online.evaluation.metrics import closed_gap  # slow import
+
+    data = steps.assign(
+        segment=step_segments(steps, runs), extra_run=(steps["n_runs"] > 1) * 1.0
+    )
+    means = data.groupby(["run_id", "segment"])[
+        ["user_cost", "vbs_cost", "sbs_cost", "extra_run", "n_runs"]
+    ].mean()
+    maximize = runs.set_index("run_id")["maximize"]
+    means["closed_gap"] = [
+        closed_gap(row.user_cost, row.sbs_cost, row.vbs_cost, bool(maximize[run_id]))
+        for (run_id, _), row in means.iterrows()
+    ]
+    means = means.rename(
+        columns={
+            "user_cost": "mean_user_cost",
+            "vbs_cost": "mean_vbs_cost",
+            "sbs_cost": "mean_sbs_cost",
+            "extra_run": "extra_run_rate",
+            "n_runs": "mean_runs",
+        }
+    ).reset_index()
+    return segments(runs).merge(means, on=["run_id", "segment"])[
+        SEGMENT_COLUMNS + SEGMENT_METRICS
+    ]
