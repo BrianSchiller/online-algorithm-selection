@@ -20,7 +20,9 @@ from matplotlib.figure import Figure
 from oas_experiments.analysis.style import (
     LINESTYLES,
     WIDTH,
+    family_rank,
     family_styles,
+    method_order,
     protocol_marker,
 )
 
@@ -46,7 +48,8 @@ def _drift_background(ax: Axes, runs: pd.DataFrame) -> None:
     for start, end in first["transition_intervals"]:
         ax.axvspan(start, end, color="0.9", lw=0, zorder=0)
     for point in first["drift_points"]:
-        ax.axvline(point, color="0.4", ls="--", lw=0.8, zorder=1)
+        # above the grid (zorder 2), which would hide points on a tick
+        ax.axvline(point, color="0.4", ls="--", lw=0.8, zorder=2.1)
 
 
 def _legend(ax: Axes) -> None:
@@ -73,7 +76,9 @@ def _curves(
         data = data[data["method"].isin(methods)]
     _drift_background(ax, _select(runs, stream, protocol))
     styles = family_styles(runs["method_family"])
-    for family, members in data.groupby("method_family", sort=True):
+    families = sorted(data["method_family"].unique(), key=family_rank)
+    for family in families:
+        members = data[data["method_family"] == family]
         style = styles[family]
         for i, (method, line) in enumerate(members.groupby("method", sort=True)):
             line = line.sort_values("step")
@@ -153,6 +158,8 @@ def cost_quality_front(
     protocol: str,
     *,
     overhead: bool = False,
+    hours: bool = False,
+    by_runs: bool = False,
     ax: Axes | None = None,
     width: float = WIDTH,
 ) -> tuple[Figure, Axes]:
@@ -172,6 +179,11 @@ def cost_quality_front(
         The panel to draw.
     overhead
         Add selector and detector time (``overhead_seconds``) to x.
+    hours
+        CPU time in hours instead of seconds.
+    by_runs
+        Solver runs per instance (``mean_runs_per_instance``) instead of CPU
+        time on x, for quality data without runtimes; ignores ``overhead``.
     ax
         Axes to draw into; a new figure if omitted.
     width
@@ -179,11 +191,16 @@ def cost_quality_front(
     """
     fig, ax = _axes(ax, width, aspect=0.6)
     data = _select(agg, stream, protocol)
-    x, xerr = data["solver_cpu_mean"], data["solver_cpu_ci95"]
+    cost = "mean_runs_per_instance" if by_runs else "solver_cpu"
+    x, xerr = data[f"{cost}_mean"], data[f"{cost}_ci95"]
+    if by_runs:
+        overhead = hours = False
     if overhead:
         x = x + data["overhead_seconds_mean"]
         # shortcut: treats CPU and overhead as independent; fine for error bars.
         xerr = np.hypot(xerr, data["overhead_seconds_ci95"])
+    if hours:
+        x, xerr = x / 3600, xerr / 3600
     data = data.assign(x=x, xerr=xerr.fillna(0), yerr=data["closed_gap_ci95"].fillna(0))
     missing = data["x"].isna()
     if missing.any():
@@ -195,8 +212,8 @@ def cost_quality_front(
         data = data[~missing]
 
     styles = family_styles(agg["method_family"])
-    for family, points in data.groupby("method_family", sort=True):
-        points = points.sort_values("x")
+    for family in sorted(data["method_family"].unique(), key=family_rank):
+        points = data[data["method_family"] == family].sort_values("x")
         style = styles[family]
         ax.errorbar(
             points["x"],
@@ -213,23 +230,32 @@ def cost_quality_front(
         )
     if data.empty:
         ax.text(0.5, 0.5, "no CPU data", transform=ax.transAxes, ha="center")
-    xlabel = "Solver CPU + overhead (s)" if overhead else "Solver CPU (s)"
+    unit = "h" if hours else "s"
+    xlabel = f"Solver CPU + overhead ({unit})" if overhead else f"Solver CPU ({unit})"
+    xlabel = "Solver runs per instance" if by_runs else xlabel
     ax.set(xlabel=xlabel, ylabel="Closed gap", title=f"{stream}, {protocol}")
     _legend(ax)
     return fig, ax
 
 
 def front_grid(
-    agg: pd.DataFrame, *, overhead: bool = False, width: float = WIDTH
+    agg: pd.DataFrame,
+    *,
+    overhead: bool = False,
+    hours: bool = False,
+    by_runs: bool = False,
+    width: float = WIDTH,
+    aspect: float = 0.45,
 ) -> tuple[Figure, np.ndarray]:
     """:func:`cost_quality_front` for every stream (columns) and protocol
-    (rows), with one shared legend. Returns the figure and the axes grid."""
+    (rows), with one shared legend. Returns the figure and the axes grid;
+    ``aspect`` is the height of one row of panels over the width."""
     streams = sorted(agg["stream"].unique())
     protocols = sorted(agg["protocol"].unique())
     fig, axes = plt.subplots(
         len(protocols),
         len(streams),
-        figsize=(width, 0.45 * width * len(protocols)),
+        figsize=(width, aspect * width * len(protocols)),
         sharey=True,
         squeeze=False,
     )
@@ -239,7 +265,15 @@ def front_grid(
             if _select(agg, stream, protocol).empty:
                 ax.set_visible(False)
                 continue
-            cost_quality_front(agg, stream, protocol, overhead=overhead, ax=ax)
+            cost_quality_front(
+                agg,
+                stream,
+                protocol,
+                overhead=overhead,
+                hours=hours,
+                by_runs=by_runs,
+                ax=ax,
+            )
             if ax.get_legend():
                 ax.get_legend().remove()
             artists, labels = ax.get_legend_handles_labels()
@@ -280,8 +314,9 @@ def detection_raster(
         Figure width in inches if a new figure is created.
     """
     selected = _select(runs, stream, protocol)
-    data = selected[selected["uses_detector"]].sort_values(
-        ["method_family", "method", "seed"]
+    data = selected[selected["uses_detector"]]
+    data = data.assign(rank=data["method_family"].map(family_rank)).sort_values(
+        ["rank", "method", "seed"]
     )
     fig, ax = _axes(ax, width, aspect=0.12 + 0.04 * len(data))
     _drift_background(ax, selected)
@@ -315,6 +350,7 @@ SEQUENTIAL = "Blues"  # one hue, light to dark: shares and counts
 # Colour bins of share heatmaps: most shares are small, so the bins are fine
 # below 0.1 and coarse above; everything above 0.5 gets the darkest colour.
 SHARE_BINS = (0, 0.01, 0.02, 0.03, 0.05, 0.075, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5, 1)
+SHARE_TICKS = (0, 0.05, 0.1, 0.2, 0.5, 1)  # labelled on the colour bar
 
 
 def cumulative_regret(
@@ -345,8 +381,11 @@ def cumulative_regret(
 def _stream_steps(
     steps: pd.DataFrame, runs: pd.DataFrame, stream: str, protocol: str
 ) -> pd.DataFrame:
-    """Steps of one stream and protocol with ``method`` and ``seed`` joined on."""
-    selected = _select(runs, stream, protocol)[["run_id", "method", "seed"]]
+    """Steps of one stream and protocol with ``method``, ``method_family`` and
+    ``seed`` joined on."""
+    selected = _select(runs, stream, protocol)[
+        ["run_id", "method", "method_family", "seed"]
+    ]
     return steps.merge(selected, on="run_id")
 
 
@@ -373,6 +412,7 @@ def run_count_shares(
     data = _stream_steps(steps, runs, stream, protocol)
     counts = data["n_runs"].clip(upper=max_runs)
     shares = pd.crosstab(data["method"], counts, normalize="index")
+    shares = shares.reindex(index=method_order(data))
     return shares.reindex(columns=range(1, max_runs + 1), fill_value=0.0)
 
 
@@ -433,21 +473,31 @@ def _heatmap(ax: Axes, frame: pd.DataFrame, label: str) -> None:
                 f"{value:.2f}".removeprefix("0"),
                 ha="center",
                 va="center",
-                fontsize=6,
+                fontsize=7,
                 color="white" if value >= 0.3 else "0.15",
             )
     # uniform spacing: every bin gets the same height, so the fine low bins show
     bar = ax.figure.colorbar(image, ax=ax, label=label, shrink=0.8, spacing="uniform")
-    bar.set_ticks(SHARE_BINS, labels=[f"{b:g}" for b in SHARE_BINS])
+    bar.set_ticks(SHARE_TICKS, labels=[f"{b:g}" for b in SHARE_TICKS])
+    bar.minorticks_off()
 
 
-def _top_columns(frame: pd.DataFrame, top: int) -> pd.DataFrame:
-    """Keep the ``top`` columns with the largest share; sum the rest as other."""
+def _top_columns(
+    frame: pd.DataFrame, top: int, rank: pd.Series | None = None
+) -> pd.DataFrame:
+    """Keep the ``top`` columns with the largest share; sum the rest as other.
+
+    The kept columns are ordered by ``rank`` (descending; e.g. how often an
+    algorithm is the VBS, so heatmaps of one stream share the column order),
+    columns without a rank after them by their largest share."""
     order = frame.max().sort_values(ascending=False).index
-    kept = frame[order[:top]]
+    kept = list(order[:top])
+    if rank is not None:
+        kept.sort(key=lambda c: (-rank.get(c, -1.0), -frame[c].max()))
+    result = frame[kept]
     if len(order) > top:
-        kept = kept.assign(other=frame[order[top:]].sum(axis=1))
-    return kept
+        result = result.assign(other=frame[order[top:]].sum(axis=1))
+    return result
 
 
 def selection_heatmap(
@@ -466,10 +516,11 @@ def selection_heatmap(
     """
     data = _stream_steps(steps, runs, stream, protocol)
     chosen = pd.crosstab(data["method"], data["primary"], normalize="index")
+    chosen = chosen.reindex(index=method_order(data))
     _, first = first_run(steps, runs, stream, protocol)
     vbs = first["vbs_algorithm"].value_counts(normalize=True).rename("VBS")
     frame = pd.concat([vbs.to_frame().T, chosen]).fillna(0.0)
-    frame = _top_columns(frame, top)
+    frame = _top_columns(frame, top, rank=vbs)
     fig, ax = _axes(ax, width, aspect=0.15 + 0.05 * len(frame))
     _heatmap(ax, frame, "Share of instances")
     ax.set(title=f"{stream}, {protocol}: primary choice", xlabel="Algorithm")
@@ -486,11 +537,12 @@ def oracle_costs(
     ax: Axes | None = None,
     width: float = WIDTH,
 ) -> tuple[Figure, Axes]:
-    """Rolling mean cost of the VBS and the stream SBS (log scale), with the
-    drift points and transition intervals of the stream."""
+    """Rolling mean cost of the VBS and the stream SBS (log scale; fitness on a
+    linear scale for quality data), with the drift points and transition
+    intervals of the stream."""
     fig, ax = _axes(ax, width, aspect=0.35)
     _drift_background(ax, _select(runs, stream, protocol))
-    _, first = first_run(steps, runs, stream, protocol)
+    run, first = first_run(steps, runs, stream, protocol)
     for column, label, color in (
         ("sbs_cost", "SBS", "0.45"),
         ("vbs_cost", "VBS", "#0072B2"),
@@ -501,10 +553,11 @@ def oracle_costs(
             color=color,
             label=label,
         )
-    ax.set_yscale("log")
+    if not run["maximize"]:
+        ax.set_yscale("log")
     ax.set(
         xlabel="Step",
-        ylabel=f"Cost (rolling mean, {window})",
+        ylabel=f"{'Fitness' if run['maximize'] else 'Cost'} (rolling mean, {window})",
         title=f"{stream}, {protocol}: oracle costs",
     )
     _legend(ax)
@@ -534,7 +587,8 @@ def segment_oracle_share(
         f"{seg.at[i, 'label']} [{seg.at[i, 'start']}, {seg.at[i, 'end']})"
         for i in frame.index
     ]
-    frame = _top_columns(frame, top)
+    vbs = first["vbs_algorithm"].value_counts(normalize=True)
+    frame = _top_columns(frame, top, rank=vbs)
     fig, ax = _axes(ax, width, aspect=0.15 + 0.05 * len(frame))
     _heatmap(ax, frame, "Share of instances")
     ax.set(
@@ -542,3 +596,103 @@ def segment_oracle_share(
         xlabel="Algorithm",
     )
     return fig, ax
+
+
+def small_multiples(
+    curves: pd.DataFrame,
+    runs: pd.DataFrame,
+    stream: str,
+    protocol: str,
+    ylabel: str,
+    *,
+    methods: list[str] | None = None,
+    ncols: int = 2,
+    width: float = WIDTH,
+    panel_aspect: float = 0.32,
+) -> tuple[Figure, np.ndarray]:
+    """One panel per method: its curve (mean and CI band) in its colour, the
+    other methods in light grey behind it, drift points and transitions, and
+    the drift signals of detector methods as ticks along the bottom.
+
+    Parameters
+    ----------
+    curves
+        Aggregated curves as in :func:`regret_curves`.
+    runs
+        Run table; gives drift points, transitions, signals and the families.
+    stream, protocol
+        The stream and protocol to draw.
+    ylabel
+        Label of the y axis.
+    methods
+        Panels for these methods (default: all, in :func:`method_order`).
+    ncols
+        Panels per row.
+    width
+        Figure width in inches.
+    panel_aspect
+        Height of one row of panels over the figure width.
+    """
+    data = _select(curves, stream, protocol)
+    selected = _select(runs, stream, protocol)
+    methods = methods or method_order(data)
+    nrows = -(-len(methods) // ncols)
+    fig, axes = plt.subplots(
+        nrows,
+        ncols,
+        figsize=(width, panel_aspect * width * nrows),
+        sharex=True,
+        sharey=True,
+        squeeze=False,
+    )
+    styles = family_styles(runs["method_family"])
+    lines = {m: line.sort_values("step") for m, line in data.groupby("method")}
+    for ax, method in zip(axes.flat, methods, strict=False):
+        _drift_background(ax, selected)
+        for other, line in lines.items():
+            if other != method:
+                ax.plot(line["step"], line["mean"], color="0.85", lw=0.6)
+        line = lines[method]
+        family = line["method_family"].iloc[0]
+        color = styles[family]["color"]
+        ax.fill_between(
+            line["step"],
+            line["lo"].clip(0),
+            line["hi"].clip(0),
+            color=color,
+            alpha=0.2,
+            lw=0,
+        )
+        ax.plot(line["step"], line["mean"], color=color, lw=1.0)
+        signals = selected.loc[selected["method"] == method, "drift_steps"]
+        steps = [s for run in signals for s in run]
+        if steps:
+            ax.plot(
+                steps,
+                [0.04] * len(steps),
+                "|",
+                color="black",
+                ms=5,
+                transform=ax.get_xaxis_transform(),
+            )
+        ax.text(
+            0.01,
+            0.97,
+            method,
+            transform=ax.transAxes,
+            va="top",
+            ha="left",
+            fontsize=8,
+            bbox={"fc": "white", "ec": "none", "pad": 1, "alpha": 0.8},
+        )
+        ax.set_ylim(bottom=0)
+    for ax in axes[-1]:
+        ax.set_xlabel("Step")
+    for i, ax in enumerate(axes.flat[len(methods) :], start=len(methods)):
+        ax.set_visible(False)
+        above = axes.flat[i - ncols]  # now the lowest panel of its column
+        above.tick_params(labelbottom=True)
+        above.set_xlabel("Step")
+    for ax in axes[:, 0]:
+        ax.set_ylabel(ylabel)
+    return fig, axes

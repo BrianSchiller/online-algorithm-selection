@@ -1,14 +1,16 @@
-"""Shared figure style: thesis font sizes, a fixed colour per method family and
-a fixed marker per protocol type.
+"""Shared figure style: thesis font sizes, a fixed colour per method family, a
+fixed marker per protocol type and the order in which methods are listed.
 
 Call :func:`apply` once before plotting (the figures CLI does).
 """
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable
 
 import matplotlib as mpl
+import pandas as pd
 
 WIDTH = 6.3  # inches, the text width of the thesis
 
@@ -31,6 +33,11 @@ FALLBACK_MARKER = "D"
 
 # Sizes for an 11pt thesis: figures are included at their natural width.
 RC = {
+    # Computer Modern, like the LaTeX text (cmr10 ships with matplotlib)
+    "font.family": "serif",
+    "font.serif": ["cmr10", "DejaVu Serif"],
+    "mathtext.fontset": "cm",
+    "axes.formatter.use_mathtext": True,  # cmr10 has no minus sign of its own
     "font.size": 9,
     "axes.labelsize": 9,
     "axes.titlesize": 9,
@@ -53,6 +60,8 @@ RC = {
 def apply() -> None:
     """Set the thesis style for all following figures."""
     mpl.rcParams.update(RC)
+    # cmr10 has a zero timestamp, which fontTools warns about on every save
+    logging.getLogger("fontTools").setLevel(logging.ERROR)
 
 
 _pinned: frozenset[str] = frozenset()
@@ -64,6 +73,31 @@ def pin_families(families: Iterable[str]) -> None:
     experiment."""
     global _pinned
     _pinned = frozenset(families)
+
+
+_order: tuple[str, ...] = ()
+
+
+def pin_order(families: Iterable[str]) -> None:
+    """List families in this order (e.g. the order of the config) in tables
+    and legends; other families follow by name."""
+    global _order
+    _order = tuple(dict.fromkeys(families))
+
+
+def family_rank(family: str) -> tuple[int, str]:
+    """Sort key of a family: its place in :func:`pin_order`, then its name."""
+    return (_order.index(family) if family in _order else len(_order), family)
+
+
+def method_order(frame: pd.DataFrame) -> list[str]:
+    """The methods of ``frame`` (with ``method`` and ``method_family``) in
+    family order (:func:`family_rank`), then by name within a family."""
+    pairs = frame[["method_family", "method"]].drop_duplicates()
+    keys = sorted(
+        (family_rank(f), m) for f, m in pairs.itertuples(index=False, name=None)
+    )
+    return list(dict.fromkeys(m for _, m in keys))
 
 
 def family_styles(families: Iterable[str]) -> dict[str, dict]:

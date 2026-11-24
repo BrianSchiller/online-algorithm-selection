@@ -3,8 +3,9 @@
 Each table function returns ``(frame, latex)``: the numbers as a DataFrame
 (index: method; columns: stream, metric, ``mean``/``ci95``) and a
 ``tabular`` environment to ``\\input`` inside a ``table``. Cells read
-"mean ± ci95"; the best mean per quality column is bold (costs such as CPU
-and extra runs are traded against quality, so they have no "best").
+"mean ± ci95" in the column's format; the best mean per quality column is
+bold (costs such as CPU and extra runs are traded against quality, so they
+have no "best").
 """
 
 from __future__ import annotations
@@ -12,38 +13,57 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-# metric -> (column header, whether higher is better; None = no bold)
+from oas_experiments.analysis.style import method_order
+
+# metric -> (column header, whether higher is better (None = no bold), format);
+# the formats are those of :func:`number`.
 MAIN_METRICS = {
-    "closed_gap": ("Closed gap", True),
-    "solver_cpu": ("Solver CPU", None),
-    "extra_run_rate": ("Extra runs", None),
-    "mean_recovery": ("Recovery", False),
-    # Recovery averages only recovered drift points, so show the others too.
-    "n_not_recovered": ("Not recovered", False),
+    "closed_gap": ("Closed gap", True, "f2"),
+    "mean_user_cost": ("Mean cost", False, "f0"),
+    "solved_rate": (r"Solved (\%)", True, "pct"),
+    "solver_cpu": ("CPU (h)", None, "hours"),
+    "extra_run_rate": (r"Extra runs (\%)", None, "pct"),
 }
-# Run counts and costs; ``total_runs`` counts every solver run, extra runs included.
+# What a method spends besides the solver runs the user asked for.
 COST_METRICS = {
-    "closed_gap": ("Closed gap", True),
-    "mean_user_cost": ("Mean cost", False),
-    "total_runs": ("Solver runs", None),
-    "mean_runs_per_instance": ("Runs/inst.", None),
-    "extra_run_rate": ("Extra runs", None),
-    "solver_cpu": ("Solver CPU", None),
-    "overhead_seconds": ("Overhead (s)", None),
-    "n_retrains": ("Retrains", None),
+    "mean_runs_per_instance": ("Runs/instance", None, "f2"),
+    "extra_cpu": ("Extra CPU (h)", None, "hours"),
+    "overhead_seconds": ("Overhead (s)", None, "f0"),
+    "n_retrains": ("Retrains", None, "count"),
+    "n_drift_signals": ("Drift signals", None, "count"),
 }
+# Quality data (maximize): the user's result is a fitness, and there is no
+# cutoff or runtime, hence nothing solved and no CPU time.
+QUALITY = {"mean_user_cost": ("Mean fitness", True, "f3")}
+RUNTIME_ONLY = {"solved_rate", "solver_cpu", "extra_cpu"}
 DETECTION_METRICS = {
-    "mean_delay": ("Delay", False),
-    "n_missed": ("Missed", False),
-    "n_false_alarms": ("False alarms", False),
+    "mean_delay": ("Delay", False, "f1"),
+    "n_missed": ("Missed", False, "count"),
+    "n_false_alarms": ("False alarms", False, "count"),
 }
+
+
+def number(value: float, fmt: str) -> str:
+    """A number as text: ``f0``-``f3`` fixed decimals, ``count`` an integer
+    (one decimal if a mean over seeds is not whole), ``pct`` a share in
+    percent, ``hours`` seconds in whole hours. NaN is ``--``."""
+    if pd.isna(value):
+        return "--"
+    if fmt == "pct":
+        return f"{100 * value:.0f}"
+    if fmt == "hours":  # one decimal below 10 h
+        hours = value / 3600
+        return "0" if hours == 0 else f"{hours:.1f}" if hours < 10 else f"{hours:.0f}"
+    if fmt == "count":
+        return f"{value:.0f}" if float(value).is_integer() else f"{value:.1f}"
+    return f"{value:.{int(fmt[1:])}f}"
 
 
 def main_table(
-    agg: pd.DataFrame, protocol: str, digits: int = 2
+    agg: pd.DataFrame, protocol: str, maximize: bool = False
 ) -> tuple[pd.DataFrame, str]:
-    """Closed gap, solver CPU, extra-run rate, recovery and drift points not
-    recovered from, per method and stream.
+    """Closed gap, mean cost, share of solved instances, solver CPU and
+    extra-run rate, per method and stream.
 
     Parameters
     ----------
@@ -52,18 +72,25 @@ def main_table(
         protocol and method).
     protocol
         The protocol to tabulate.
-    digits
-        Decimal places.
+    maximize
+        Quality data: mean fitness instead of mean cost, no solved or CPU columns.
     """
-    return _table(agg[agg["protocol"] == protocol], MAIN_METRICS, digits)
+    return _table(agg[agg["protocol"] == protocol], _for(MAIN_METRICS, maximize))
 
 
 def cost_table(
-    agg: pd.DataFrame, protocol: str, digits: int = 2
+    agg: pd.DataFrame, protocol: str, maximize: bool = False
 ) -> tuple[pd.DataFrame, str]:
     """:data:`COST_METRICS` per method and stream; parameters as in
     :func:`main_table`. ``agg`` must aggregate these metrics."""
-    return _table(agg[agg["protocol"] == protocol], COST_METRICS, digits)
+    return _table(agg[agg["protocol"] == protocol], _for(COST_METRICS, maximize))
+
+
+def _for(metrics: Metrics, maximize: bool) -> Metrics:
+    """``metrics`` as they apply to quality data if ``maximize``."""
+    if not maximize:
+        return metrics
+    return {k: QUALITY.get(k, v) for k, v in metrics.items() if k not in RUNTIME_ONLY}
 
 
 def pivot_table(
@@ -73,7 +100,7 @@ def pivot_table(
     *,
     headers: dict | None = None,
     higher: bool | None = None,
-    digits: int = 2,
+    fmt: str = "f2",
 ) -> tuple[pd.DataFrame, str]:
     """One metric per method (rows) and value of ``column`` (columns).
 
@@ -90,11 +117,11 @@ def pivot_table(
         LaTeX header per value of ``column`` (default: the escaped value).
     higher
         Whether higher is better; the best mean per column is bold. None: no bold.
-    digits
-        Decimal places.
+    fmt
+        Number format, see :func:`number`.
     """
     keys = sorted(agg[column].unique())
-    methods = agg.sort_values(["method_family", "method"])["method"].unique()
+    methods = method_order(agg)
     rows = agg.set_index(["method", column])
     frame = pd.DataFrame(
         {
@@ -123,7 +150,7 @@ def pivot_table(
             _cell(
                 row[(k, "mean")],
                 row[(k, "ci95")],
-                digits,
+                fmt,
                 bold=row[(k, "mean")] == best.get(k),
             )
             for k in keys
@@ -133,21 +160,20 @@ def pivot_table(
     return frame, "\n".join(lines) + "\n"
 
 
-def detection_table(
-    agg: pd.DataFrame, protocol: str, digits: int = 2
-) -> tuple[pd.DataFrame, str]:
+def detection_table(agg: pd.DataFrame, protocol: str) -> tuple[pd.DataFrame, str]:
     """Detection delay, missed drifts and false alarms of detector methods.
 
     Only methods with ``uses_detector``. Parameters as in :func:`main_table`.
     """
     data = agg[(agg["protocol"] == protocol) & agg["uses_detector"]]
-    return _table(data, DETECTION_METRICS, digits)
+    return _table(data, DETECTION_METRICS)
 
 
-def _table(
-    data: pd.DataFrame, metrics: dict[str, tuple[str, bool | None]], digits: int
-) -> tuple[pd.DataFrame, str]:
-    methods = data.sort_values(["method_family", "method"])["method"].unique()
+Metrics = dict[str, tuple[str, bool | None, str]]
+
+
+def _table(data: pd.DataFrame, metrics: Metrics) -> tuple[pd.DataFrame, str]:
+    methods = method_order(data)
     streams = sorted(data["stream"].unique())
     rows = data.set_index(["method", "stream"])
     columns = {}
@@ -165,48 +191,48 @@ def _table(
             names=["stream", "metric", "stat"],
         ),
     )
-    return frame, _latex(frame, streams, metrics, digits)
+    return frame, _latex(frame, streams, metrics)
 
 
-def _latex(
-    frame: pd.DataFrame,
-    streams: list[str],
-    metrics: dict[str, tuple[str, bool | None]],
-    digits: int,
-) -> str:
+def _latex(frame: pd.DataFrame, streams: list[str], metrics: Metrics) -> str:
+    """Stream names head groups of columns; with one stream they are left out."""
     k = len(metrics)
     best = {}
     for stream in streams:
-        for metric, (_, higher) in metrics.items():
+        for metric, (_, higher, _) in metrics.items():
             means = frame[(stream, metric, "mean")]
             if higher is not None:
                 best[(stream, metric)] = means.max() if higher else means.min()
 
-    lines = [
-        rf"\begin{{tabular}}{{l{'r' * k * len(streams)}}}",
-        r"\toprule",
+    lines = [rf"\begin{{tabular}}{{l{'r' * k * len(streams)}}}", r"\toprule"]
+    if len(streams) > 1:
+        lines += [
+            " & ".join(
+                [""] + [rf"\multicolumn{{{k}}}{{c}}{{{_escape(s)}}}" for s in streams]
+            )
+            + r" \\",
+            " ".join(
+                rf"\cmidrule(lr){{{2 + i * k}-{1 + (i + 1) * k}}}"
+                for i in range(len(streams))
+            ),
+        ]
+    lines += [
         " & ".join(
-            ["Method"] + [rf"\multicolumn{{{k}}}{{c}}{{{_escape(s)}}}" for s in streams]
+            ["Method"] + [label for _ in streams for label, *_ in metrics.values()]
         )
-        + r" \\",
-        " ".join(
-            rf"\cmidrule(lr){{{2 + i * k}-{1 + (i + 1) * k}}}"
-            for i in range(len(streams))
-        ),
-        " & ".join([""] + [label for _ in streams for label, _ in metrics.values()])
         + r" \\",
         r"\midrule",
     ]
     for method, row in frame.iterrows():
         cells = [_escape(method)]
         for stream in streams:
-            for metric in metrics:
+            for metric, (_, _, fmt) in metrics.items():
                 mean = row[(stream, metric, "mean")]
                 cells.append(
                     _cell(
                         mean,
                         row[(stream, metric, "ci95")],
-                        digits,
+                        fmt,
                         bold=mean == best.get((stream, metric)),
                     )
                 )
@@ -215,12 +241,12 @@ def _latex(
     return "\n".join(lines) + "\n"
 
 
-def _cell(mean: float, ci: float, digits: int, bold: bool) -> str:
+def _cell(mean: float, ci: float, fmt: str, bold: bool) -> str:
     if pd.isna(mean):
         return "--"
-    text = f"{mean:.{digits}f}"
+    text = number(mean, fmt)
     if not pd.isna(ci):
-        text += rf" $\pm$ {ci:.{digits}f}"
+        text += rf" $\pm$ {number(ci, fmt)}"
     return rf"\textbf{{{text}}}" if bold else text
 
 

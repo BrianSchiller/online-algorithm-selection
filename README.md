@@ -279,7 +279,7 @@ Metrics and statistics: see [Metrics](#metrics).
 
 `oas_experiments.analysis.metrics` and `.stats` compute every number the
 thesis reports from the frames of `load_experiment`. Defaults: `window=50`
-steps, `tolerance=0.1`, `detection_tolerance=100`, `confidence=0.95`. All are
+steps, `tolerance=0.1`, `hold=2`, `cap=0.1`, `detection_tolerance=100`, `confidence=0.95`. All are
 function parameters. Steps and drift points count from the first evaluated
 instance, so never compare curves across protocols or streams.
 
@@ -309,13 +309,22 @@ indexing, `drift_points`, `transition_intervals` (half-open `[start, end)`),
 
 **Per drift point** (`drift_metrics`). For a drift point `p`: `end` is the
 next drift point or the end of the stream; `start` is `p`, or for gradual
-drift the end of the transition interval that begins at `p`.
+drift the end of the transition interval that begins at `p`. Per step,
+`r = user_cost - vbs_cost` (the regret) and `d = sbs_cost - vbs_cost` (the SBS
+of the whole stream; both signs flipped when maximising). The closed gap of a
+window `[a, b)` is `G(a, b) = 1 - sum(r[a:b]) / sum(d[a:b])`, NaN if
+`sum(d[a:b]) <= 0` (the SBS is optimal on the whole window). Recovery works on
+`G`, not on raw regret, so a harder segment where regret and gap grow together
+does not count as degradation.
 
 | metric | definition |
 | --- | --- |
-| `pre_level` | mean regret over `[p - window, p)` (shorter at the stream start; NaN at step 0) |
+| `pre_gap` | `G(max(p - window, 0), p)` (shorter at the stream start; NaN at step 0 or when the gap sum is `<= 0`) |
+| `low_gap` | smallest non-NaN `G(a, a + window)` over full windows with `p <= a` and `a + window <= end` (the trough) |
 | `peak_regret` | largest mean regret of a full `window` inside `[p, end)` |
-| `recovery` | `s - start` for the first `s >= start` such that the window `[s, s + window)` lies before `end` and its mean regret is at most `pre_level + tolerance * (peak_regret - pre_level)`: all but `tolerance` (default 10%) of the jump is gone (the trailing rolling regret at `s + window - 1`); 0 = no visible degradation, NaN = never recovered, or not measurable (no `pre_level`, segment shorter than `window`) |
+| `recovery` | `s - start` for the first `s >= start` such that the `hold` (default 2) consecutive, non-overlapping windows `[s + k * window, s + (k + 1) * window)`, `k = 0 .. hold - 1`, lie inside `[start, end)`, are not NaN and all have `G >= pre_gap - min(tolerance * max(pre_gap - low_gap, 0), cap)`: all but `tolerance` (default 10%) of the drop is gone, the closed gap is at most `cap` (default 0.1) below `pre_gap`, and it stays there. The closed gap has no lower bound, so without `cap` a deep drop would lower the bar far below the level before the drift; 0 = no visible degradation |
+| not measurable | `pre_gap` is NaN, or `[start, end)` is shorter than `hold * window`: `recovery` is NaN and the drift point is not counted in `n_not_recovered` |
+| not recovered | measurable, but no such `s`: `recovery` is NaN and the drift point counts in `n_not_recovered` |
 | `extra_run_rate_before` / `_after` | share of steps with `n_runs > 1` in `[p - window, p)` / `[p, min(p + window, end))` |
 
 Transition intervals that start inside the warm-start prefix have no drift
@@ -330,7 +339,7 @@ selector's `detector` parameter is set), then `closed_gap`,
 `detection_tolerance`: a signal in `[p, p + tolerance]` detects `p`; NaN
 without a detector, so a detector that never fires shows all drifts missed);
 `mean_recovery` (over the drift points that recovered), `n_not_recovered`
-(measurable drift points that never recovered),
+(measurable drift points that never recovered, see above),
 `mean_peak_regret` (over all drift points); then the `param.*` columns. Drift
 metrics are NaN for streams without drift points; CPU metrics are NaN when
 maximising.
@@ -390,14 +399,16 @@ installed:
 
 ```
 python -m oas_experiments.report results/test_sat12 --out reports/test_sat12
-python -m oas_experiments.report results/test_sat12 --out reports/x --sections overview,stream,performance
+python -m oas_experiments.report results/test_sat12 --out reports/x --sections summary,stream,results
 python -m oas_experiments.report results/test_sat12 --out reports/x --no-pdf
 python -m oas_experiments.report results/test_sat12 --out reports/test_sat12 --per-protocol
 ```
 
 `--per-protocol` writes one report per protocol to `<out>/<protocol>/`
 (`report.restrict(ctx, protocol)`); each method family keeps its colour across
-them (`style.pin_families`).
+them (`style.pin_families`). Methods are listed in the order of the
+experiment's config file (`configs/<config_file>`, `style.pin_order`), else by
+name.
 
 It writes `report.tex`, one `sections/<name>.tex` per section (each can be
 `\input` into the thesis on its own), `figures/*.pdf` and `report.pdf`.
@@ -405,13 +416,16 @@ Sections, in order:
 
 | section | content |
 | --- | --- |
-| `overview` | experiment grid, evaluation and metric settings, provenance (warns if runs are not final or dirty) |
-| `stream` | per stream: construction (kind, params, drift builder, schedule, instances, SBS); per protocol: drift points, a segment table (most frequent VBS, VBS/SBS cost, unsolved share), oracle costs over time, oracle-best algorithm per segment |
-| `methods` | method, family, class, protocols, parameters set in the config |
-| `performance` | per protocol a cost table (closed gap, mean cost, total solver runs incl. extra runs, runs per instance, extra-run rate, CPU, overhead, retrains) and the main table; the fronts; per stream and protocol cumulative regret, solver runs per instance, primary choice per method against the VBS |
-| `drift` | detection tables; per stream and protocol with drift: regret and extra-run curves, detection raster, closed gap per segment, and per drift point recovery, peak regret and change of the extra-run rate |
-| `statistics` | mean ranks, Friedman, Wilcoxon against `online-pairwise` (else the best-ranked method) over the (stream, protocol) cells every method has; only a note below three cells or methods |
-| `appendix` | every run, and the resolved selector config of every method |
+| `summary` | the experiment in a few lines (a box if runs are not final or dirty, a note if there are too few cells for tests), the main table (closed gap, mean cost, share of solved instances, CPU, extra-run rate) and the cost-quality front |
+| `stream` | per stream: construction (kind, params, drift builder, schedule, instances, SBS) and, per protocol, drift points, a segment table (most frequent VBS, VBS/SBS cost, unsolved share), oracle costs over time, oracle-best algorithm per segment |
+| `methods` | method, family (with sweeps), protocols (if several), the selector settings set in the config |
+| `results` | per protocol a cost table (runs per instance, CPU of extra runs, overhead, retrains, drift signals); per stream and protocol cumulative regret, solver runs per instance, primary choice per method against the VBS |
+| `drift` | detection tables; per stream and protocol with drift: rolling regret as one panel per method (drift signals as ticks), extra-run rate of the methods with extra runs, closed gap per segment, and per drift point recovery, peak regret and change of the extra-run rate |
+| `statistics` | mean ranks, Friedman, Wilcoxon against `online-pairwise` (else the best-ranked method) over the (stream, protocol) cells every method has; empty below three cells or methods |
+| `appendix` | metric definitions, provenance (code, environment, run dates) and every run |
+
+Figures lose their matplotlib titles in the report (captions say what they
+show), except panel grids over several streams or protocols.
 
 A section is a function `(ctx, out) -> str` that returns LaTeX and saves its
 figures with `out.figure(fig, name, caption)`. To change the report for

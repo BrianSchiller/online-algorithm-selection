@@ -201,3 +201,28 @@ def test_raster_keeps_detector_that_never_fired():
     _, ax = plots.detection_raster(runs, "switch", "warm")
     labels = [t.get_text() for t in ax.get_yticklabels()]
     assert labels == ["ds-ts s0", "ds-ts s1", "rook s0", "rook s1"]
+
+
+def test_small_multiples_one_panel_per_method_with_signals():
+    runs = runs_frame()
+    curves = curves_frame()
+    methods = sorted(curves[curves.stream == "switch"]["method"].unique())
+    fig, axes = plots.small_multiples(curves, runs, "switch", "warm", "Regret")
+    shown = [ax for ax in axes.flat if ax.get_visible()]
+    assert [ax.texts[0].get_text() for ax in shown] == style.method_order(
+        curves[curves.stream == "switch"]
+    )
+    assert len(shown) == len(methods)
+    detector = runs[(runs.stream == "switch") & runs.uses_detector]["method"]
+    for ax in shown:
+        ticks = [line for line in ax.lines if line.get_marker() == "|"]
+        assert bool(ticks) == (ax.texts[0].get_text() in set(detector))
+
+
+def test_front_by_solver_runs():
+    agg = agg_frame().assign(
+        mean_runs_per_instance_mean=2.0, mean_runs_per_instance_ci95=0.0
+    )
+    _, ax = plots.cost_quality_front(agg, "switch", "warm", by_runs=True)
+    assert ax.get_xlabel() == "Solver runs per instance"
+    assert set(_fronts(ax)["rook"].lines[0].get_xdata()) == {2.0}

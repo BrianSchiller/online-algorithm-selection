@@ -91,7 +91,7 @@ methods:
       params:
         candidate_order: runner_up
         gate:
-          class: asf.online.gate.ProbeAllAfterDrift
+          class: asf.online.gate.AfterDriftGate
           params:
             gate:
               class: asf.online.gate.UncertaintyGate

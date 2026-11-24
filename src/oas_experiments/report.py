@@ -1,8 +1,9 @@
-"""A LaTeX report (and PDF) of one experiment: stream, methods, performance,
-drift adaptation, statistics and run details.
+"""A LaTeX report (and PDF) of one experiment: summary with the main results,
+stream, methods, results, drift adaptation, statistics and an appendix
+(metrics, provenance, runs).
 
     python -m oas_experiments.report results/test_sat12 --out reports/test_sat12
-    python -m oas_experiments.report results/x --out r/x --sections overview,stream
+    python -m oas_experiments.report results/x --out r/x --sections summary,stream
     python -m oas_experiments.report results/x --out reports/x --no-pdf
 
 Writes ``report.tex``, one ``sections/<name>.tex`` per section (each can be
@@ -12,13 +13,14 @@ Writes ``report.tex``, one ``sections/<name>.tex`` per section (each can be
 A section is a function ``(ctx: Context, out: Out) -> str`` that returns
 LaTeX and saves its figures through ``out``. :data:`SECTIONS` lists them in
 report order; a report for another scenario passes its own list of names to
-:func:`write_report`, or adds a function to :data:`SECTIONS`.
+:func:`write_report`, or adds a function to :data:`SECTIONS`. Methods are
+listed in the order of the experiment's config file.
 """
 
 from __future__ import annotations
 
 import argparse
-import json
+import os
 import shutil
 import subprocess
 import sys
@@ -31,6 +33,7 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import yaml
 from matplotlib.figure import Figure
 
 from oas_experiments import figures
@@ -39,7 +42,7 @@ from oas_experiments.analysis.tables import escape
 from oas_experiments.results import ResultError, load_experiment
 
 BY = ("stream", "protocol", "protocol_type", "method")
-COST_METRICS = ["mean_runs_per_instance", "n_retrains", "total_runs"]
+COST_METRICS = ["mean_runs_per_instance", "n_retrains", "total_runs", "solved_rate"]
 DRIFT_METRICS = ["recovery", "peak_regret", "extra_run_rate_change"]
 CONFIG_KEYS = ["run_id", "stream", "protocol", "method", "method_family"]
 
@@ -68,6 +71,7 @@ def load(experiment_dir: str | Path) -> Context:
     )
     # every solver run, extra runs included
     table["total_runs"] = table["mean_runs_per_instance"] * table["n_evaluated"]
+    table = table.merge(solved_rate(results.steps, runs), on="run_id", how="left")
     keys = table[[*CONFIG_KEYS, "protocol_type", "uses_detector"]]
 
     segment = metrics.segment_metrics(steps, runs).merge(keys, on="run_id")
@@ -91,6 +95,17 @@ def load(experiment_dir: str | Path) -> Context:
             metrics.rolling_curves(steps, "cum_regret", window=1), runs
         ),
     )
+
+
+def solved_rate(steps: pd.DataFrame, runs: pd.DataFrame) -> pd.DataFrame:
+    """Share of instances on which the user gets a result within the cutoff
+    (cost below the timeout penalty), per run; NaN for maximisation."""
+    penalty = runs.set_index("run_id").eval("par_factor * cutoff")
+    penalty[runs.set_index("run_id")["maximize"].astype(bool)] = np.nan
+    limit = steps["run_id"].map(penalty)
+    solved = (steps["user_cost"] < limit).where(limit.notna())
+    rate = solved.groupby(steps["run_id"]).mean()
+    return rate.rename("solved_rate").rename_axis("run_id").reset_index()
 
 
 def restrict(ctx: Context, protocol: str) -> Context:
@@ -118,13 +133,21 @@ class Out(NamedTuple):
     dir: Path
     width: float = style.WIDTH
 
-    def figure(self, fig: Figure, name: str, caption: str) -> str:
-        """Save ``fig`` as ``figures/<name>.pdf``; return a LaTeX figure."""
+    def figure(
+        self, fig: Figure, name: str, caption: str, keep_titles: bool = False
+    ) -> str:
+        """Save ``fig`` as ``figures/<name>.pdf``; return a LaTeX figure.
+
+        Axes titles are removed (the caption and the heading say what the
+        figure shows), unless ``keep_titles`` (e.g. panels of a grid)."""
+        if not keep_titles:
+            for ax in fig.axes:
+                ax.set_title("")
         (self.dir / "figures").mkdir(parents=True, exist_ok=True)
         fig.savefig(self.dir / "figures" / f"{name}.pdf")
         plt.close(fig)
         return (
-            "\\begin{figure}[H]\n\\centering\n"
+            "\\begin{figure}[!htb]\n\\centering\n"
             f"\\includegraphics[width=\\linewidth]{{figures/{name}.pdf}}\n"
             f"\\caption{{{caption}}}\n\\end{{figure}}\n"
         )
@@ -137,9 +160,10 @@ Section = Callable[[Context, Out], str]
 
 
 def table_env(tabular: str, caption: str) -> str:
-    """A ``table`` around ``tabular``, shrunk to the text width if wider."""
+    """A ``table`` around ``tabular`` in small type, shrunk to the text width
+    only if it is still wider."""
     return (
-        "\\begin{table}[H]\n\\centering\n"
+        "\\begin{table}[!htb]\n\\centering\n\\small\n"
         f"\\caption{{{caption}}}\n"
         "\\resizebox{\\ifdim\\width>\\linewidth\\linewidth\\else\\width\\fi}{!}{%\n"
         f"{tabular}}}\n\\end{{table}}\n"
@@ -226,24 +250,46 @@ METRIC_DEFINITIONS = {
     "Closed gap": "Share of the gap between SBS and VBS (mean cost) that a method "
     "closes: 1 = VBS, 0 = SBS, negative = worse than the SBS.",
     "Mean cost": "Mean cost per instance as the user sees it.",
+    "Solved": "Share of instances on which the user gets a result within the cutoff.",
     "Solver CPU": "Total runtime of all solver runs, extra runs included, in "
-    "seconds; a timeout counts the cutoff, not the penalty.",
-    "Solver runs": "Number of solver runs over the stream, extra runs included; "
-    "runs per instance is its mean.",
+    "hours; a timeout counts the cutoff, not the penalty.",
+    "Extra CPU": "The part of the solver CPU spent on extra runs.",
+    "Runs/instance": "Mean number of solver runs per instance, extra runs included.",
     "Extra runs": "Share of instances with more than one solver run.",
     "Overhead": "Total time the selector and the drift detector spend, in seconds.",
-    "Recovery": f"Steps after a drift point until the rolling regret "
+    "Recovery": f"Steps after a drift point until the closed gap per window "
     f"({metrics.WINDOW} steps) is back to its level before the drift, up to "
-    f"{escape(f'{metrics.TOLERANCE:.0%}')} of the jump; 0 = no visible "
-    "degradation. Averaged "
+    f"{escape(f'{metrics.TOLERANCE:.0%}')} of the drop and at most "
+    f"{metrics.CAP:g} below it, and stays there for "
+    f"{metrics.HOLD} consecutive windows; 0 = no visible degradation. Averaged "
     "over the drift points that recovered.",
-    "Not recovered": "Number of drift points after which the rolling regret does "
-    "not come back before the next drift point.",
+    "Not recovered": "Number of drift points after which the closed gap per "
+    f"window does not come back and hold for {metrics.HOLD} windows before the "
+    "next drift point (drift points without a level before the drift or with a "
+    "too short segment are not counted).",
     "Peak regret": "Highest rolling regret between a drift point and the next one.",
     "Detection": f"A drift signal within {metrics.DETECTION_TOLERANCE} steps after "
     "a drift point detects it (delay in steps); a drift point without one is "
     "missed, other signals are false alarms.",
 }
+
+
+# Quality data (maximize): fitness replaces cost; no cutoff, so no solved
+# instances and no CPU time.
+QUALITY_DEFINITIONS = {
+    "Fitness": "Quality of the result on an instance, higher is better (bin "
+    "packing: Falkenauer fitness of the packing).",
+    "Regret": "Fitness of the VBS minus the fitness the user gets on that instance.",
+    "Closed gap": "Share of the gap between SBS and VBS (mean fitness) that a "
+    "method closes: 1 = VBS, 0 = SBS, negative = worse than the SBS.",
+    "Mean fitness": "Mean fitness per instance as the user sees it.",
+}
+QUALITY_DROPPED = ("Cost", "Mean cost", "Solved", "Solver CPU", "Extra CPU")
+
+
+def _maximize(runs: pd.DataFrame) -> bool:
+    """Whether the runs maximise a quality (e.g. bin-packing fitness)."""
+    return bool(runs["maximize"].astype(bool).all())
 
 
 def _pairs(runs: pd.DataFrame) -> list[tuple[str, str]]:
@@ -263,6 +309,37 @@ def _count(n: int, word: str) -> str:
     return f"{n} {word}" + ("" if n == 1 else "s")
 
 
+# --- sections ---------------------------------------------------------------
+
+
+def _single(ctx: Context) -> bool:
+    """Whether the report has one (stream, protocol) pair: then headings and
+    captions need not name it."""
+    return len(_pairs(ctx.runs)) == 1
+
+
+def _part(ctx: Context, name: str, protocol: str) -> str:
+    """A subsection heading per (stream, protocol) pair; none if there is only
+    one (headings without text of their own float away from the figures)."""
+    if _single(ctx):
+        return ""
+    return f"\\subsection{{{escape(f'{name}, {protocol}')}}}\n"
+
+
+def _seeds(runs: pd.DataFrame) -> str:
+    n = runs["seed"].nunique() * runs["stream_seed"].nunique()
+    return "one seed" if n == 1 else f"mean $\\pm$ 95\\% CI over {n} seeds"
+
+
+def _short(labels: Sequence[str]) -> list[str]:
+    """Labels without the prefix they all share (``SAT12-HAND`` -> ``HAND``),
+    cut at a ``-``, ``_`` or space."""
+    labels = [str(label) for label in labels]
+    prefix = os.path.commonprefix(labels) if len(set(labels)) > 1 else ""
+    cut = max(prefix.rfind(c) for c in "-_ ") + 1
+    return [label[cut:] for label in labels]
+
+
 def _protocol_text(row: pd.Series) -> str:
     if row["protocol_type"] == "warm":
         return (
@@ -272,32 +349,54 @@ def _protocol_text(row: pd.Series) -> str:
     return f"{escape(row['protocol'])}: no warm start, the whole stream is evaluated"
 
 
-# --- sections ---------------------------------------------------------------
-
-
-def overview(ctx: Context, out: Out) -> str:
-    """Experiment grid, evaluation settings, provenance and metric definitions."""
-    runs = ctx.runs
-    first = runs.iloc[0]
-    protocols = runs.drop_duplicates("protocol").sort_values("protocol")
-    env = first["environment"] or {}
+def _is_final(runs: pd.DataFrame) -> tuple[bool, str]:
+    """Whether every run is a final run on clean code, and why not."""
     final = int((runs["final"] == True).sum())  # noqa: E712 (None is not final)
     dirty = int(runs["repo_dirty"].fillna(True).sum() + runs["asf_dirty"].sum())
     if final == len(runs) and not dirty:
-        status = "Final: every run is traceable to committed code."
-    else:
-        status = (
-            f"\\textbf{{Pilot}}: {len(runs) - final} of {len(runs)} runs were not "
-            "started as final runs (clean, committed code with the pinned ASF "
-            f"version), {dirty} with uncommitted changes. Not for the thesis."
+        return True, "every run is traceable to committed code"
+    reasons = []
+    if final < len(runs):
+        reasons.append(f"{len(runs) - final} of {len(runs)} runs not started as final")
+    if dirty:
+        reasons.append(f"{dirty} with uncommitted changes")
+    return False, "; ".join(reasons)
+
+
+def _cells(ctx: Context) -> tuple[pd.DataFrame, int]:
+    """Runs of the methods that every (stream, protocol) cell has, and the
+    number of cells."""
+    table = ctx.table
+    cells = table.groupby(["stream", "protocol"]).ngroups
+    present = table.groupby("method")[["stream", "protocol"]].apply(
+        lambda f: len(f.drop_duplicates())
+    )
+    compared = table[table["method"].isin(present[present == cells].index)]
+    return compared, compared.groupby(["stream", "protocol"]).ngroups
+
+
+def _testable(ctx: Context) -> bool:
+    compared, n = _cells(ctx)
+    return n >= 3 and compared["method"].nunique() >= 3
+
+
+def summary(ctx: Context, out: Out) -> str:
+    """The experiment in a few lines, the main table and the cost-quality front."""
+    runs = ctx.runs
+    first = runs.iloc[0]
+    protocols = runs.drop_duplicates("protocol").sort_values("protocol")
+    final, why = _is_final(runs)
+    text = "\\section{Summary}\n"
+    if not final:
+        text += (
+            "\\begin{center}\\fbox{\\parbox{0.96\\linewidth}{\\textbf{Pilot run, "
+            f"not for the thesis}}: {escape(why)} (details in the appendix).}}}}"
+            "\\end{center}\n"
         )
-    repo, asf = (_join(runs[c].dropna().str[:10].unique()) for c in COMMITS)
-    commits = f"experiments \\texttt{{{repo}}}, ASF \\texttt{{{asf}}}"
     items = {
         "Experiment": f"{escape(first['experiment'])} (config "
-        f"{escape(first['config_file'])})",
-        "Runs": f"{len(runs)}: "
-        + ", ".join(
+        f"{escape(first['config_file'])}), {len(runs)} runs",
+        "Grid": ", ".join(
             _count(runs[column].nunique(), word)
             for column, word in (
                 ("stream", "stream"),
@@ -310,50 +409,78 @@ def overview(ctx: Context, out: Out) -> str:
         "Protocols": " \\newline ".join(
             _protocol_text(p) for _, p in protocols.iterrows()
         ),
-        "Objective": "maximise performance"
+        "Objective": "maximise a quality (e.g. fitness); no runtimes, so cost is "
+        "counted in solver runs"
         if first["maximize"]
         else f"minimise runtime; a timeout costs {first['par_factor']:g} times the "
-        "cutoff (PAR" + f"{first['par_factor']:g})",
+        f"cutoff (PAR{first['par_factor']:g})",
         "Result": RESULT_MODES.get(first["result_mode"], escape(first["result_mode"])),
-        "Status": status,
-        "Code": commits,
-        "Environment": escape(
-            f"Python {env.get('python', '?')}; "
-            + ", ".join(f"{k} {v}" for k, v in (env.get("packages") or {}).items())
-        ),
-        "Run dates": f"{runs['created_utc'].min()[:10]} to "
-        f"{runs['created_utc'].max()[:10]}",
+        "Tests": ""
+        if _testable(ctx)
+        else "no significance tests: they need at least three (stream, protocol) "
+        "cells and three methods",
     }
-    return (
-        "\\section{Overview}\n"
-        + _facts(items)
-        + "\\subsection{Metrics}\n"
-        + _facts(METRIC_DEFINITIONS)
+    text += _facts(items)
+    quality = _maximize(runs)
+    columns = (
+        "Extra runs: instances with more than one solver run, so a method can be "
+        "better for the user and still cost more."
+        if quality
+        else "Solved: instances finished within the cutoff. CPU counts every "
+        "solver run, extra runs included, so a method can be better for the "
+        "user and still cost more."
     )
+    for protocol in sorted(runs["protocol"].unique()):
+        which = "" if protocols.shape[0] == 1 else f", protocol {escape(protocol)}"
+        text += table_env(
+            tables.main_table(ctx.agg, protocol, quality)[1],
+            f"Main results{which} ({_seeds(runs)}). Closed gap: 1 = VBS, 0 = SBS. "
+            f"{columns} Best value per column in bold.",
+        )
+    cost = "solver runs per instance" if quality else "solver CPU"
+    text += out.figure(
+        plots.front_grid(
+            ctx.agg, hours=True, by_runs=quality, width=out.width, aspect=0.38
+        )[0],
+        "front",
+        f"Closed gap against {cost}: up is better, left is cheaper.",
+        keep_titles=not _single(ctx),
+    )
+    return text
 
 
 def stream(ctx: Context, out: Out) -> str:
     """Per stream: its construction; per protocol: segments and oracle figures."""
-    text = "\\section{Streams}\n"
+    names = sorted(ctx.runs["stream"].unique())
+    text = "\\section{Stream}\n" if len(names) == 1 else "\\section{Streams}\n"
     for name, runs in ctx.runs.groupby("stream", sort=True):
         first = runs.sort_values("run_id").iloc[0]
         drift = first["stream_drift"] if isinstance(first["stream_drift"], dict) else {}
         drift_params = dict(drift.get("params") or {})
         schedule = drift_params.pop("schedule", None)
-        text += f"\\subsection{{{escape(name)}}}\n" + _facts(
+        if len(names) > 1:
+            text += f"\\subsection{{{escape(name)}}}\n"
+        protocols = sorted(runs["protocol"].unique())
+        parts = [_stream_protocol(ctx, out, name, p) for p in protocols]
+        several = ctx.runs["protocol"].nunique() > 1
+        text += _facts(
             {
-                "Source": f"{escape(first['stream_kind'])}; "
-                + _kv(first["stream_params"] or {}, skip=("root",)),
+                "Name": escape(name) if len(names) == 1 else "",
+                "Source": _source(first),
                 "Instances": f"{first['n_instances']} instances, "
                 f"{first['n_features']} features, {first['n_algorithms']} "
-                f"algorithms, cutoff {first['cutoff']:g}",
+                "algorithms"
+                + ("" if first["maximize"] else f", cutoff {first['cutoff']:g}"),
                 "Ordering": (
                     f"{escape(drift.get('builder'))} ({_kv(drift_params)})"
+                    # a sort key on performance columns is named ``runtime``
+                    .replace("runtime", "fitness" if first["maximize"] else "runtime")
                     if drift
                     else "no drift block (random order or the stream kind's own)"
                 ),
+                # "+" mixes groups within a segment, "→" separates segments
                 "Schedule": _join(
-                    ["→".join(e) if isinstance(e, list) else e for e in schedule],
+                    ["+".join(e) if isinstance(e, list) else e for e in schedule],
                     " → ",
                 )
                 if schedule
@@ -361,18 +488,36 @@ def stream(ctx: Context, out: Out) -> str:
                 "SBS": f"{escape(first['sbs_algorithm_stream'])} (best single "
                 "solver on the whole stream)",
                 "Stream seeds": _join(sorted(runs["stream_seed"].unique())),
+                **({} if several else parts[0][0]),
             }
         )
-        for protocol in sorted(runs["protocol"].unique()):
-            text += _stream_protocol(ctx, out, name, protocol)
+        for protocol, (facts, body) in zip(protocols, parts, strict=True):
+            if several:
+                text += f"\\subsection{{Protocol {escape(protocol)}}}\n"
+                text += _facts(facts)
+            text += body
     return text
 
 
-def _stream_protocol(ctx: Context, out: Out, name: str, protocol: str) -> str:
+def _source(run: pd.Series) -> str:
+    """Stream kind and parameters; of ``root`` only the last folder (the
+    dataset, e.g. ``E_120_N_40_60``)."""
+    params = dict(run["stream_params"] or {})
+    if "root" in params:
+        params["root"] = Path(str(params["root"]).replace("\\", "/")).name
+    return "; ".join(filter(None, [escape(run["stream_kind"]), _kv(params)]))
+
+
+def _stream_protocol(
+    ctx: Context, out: Out, name: str, protocol: str
+) -> tuple[dict[str, str], str]:
+    """Facts of a stream under a protocol, and its segment table and figures."""
     run, steps = plots.first_run(ctx.steps, ctx.runs, name, protocol)
     run_frame = run.to_frame().T
     steps = steps.assign(segment=metrics.step_segments(steps, run_frame))
     unsolved = run["par_factor"] * run["cutoff"]
+    quality = bool(run["maximize"])
+    value = "{:.3f}" if quality else "{:.0f}"
     rows = []
     for seg in metrics.segments(run_frame).itertuples():
         part = steps[steps["segment"] == seg.segment]
@@ -380,86 +525,91 @@ def _stream_protocol(ctx: Context, out: Out, name: str, protocol: str) -> str:
         rows.append(
             [
                 seg.label,
-                f"[{seg.start}, {seg.end})",
+                f"{seg.start}--{seg.end}",
                 seg.length,
                 f"{best.index[0]} ({best.iloc[0]:.0%})" if len(best) else "--",
-                float(part["vbs_cost"].mean()),
-                float(part["sbs_cost"].mean()),
-                float("nan")
-                if run["maximize"]
-                else float((part["vbs_cost"] >= unsolved).mean()),
+                value.format(part["vbs_cost"].mean()),
+                value.format(part["sbs_cost"].mean()),
             ]
+            + ([] if quality else [f"{(part['vbs_cost'] >= unsolved).mean():.0%}"])
         )
+    measure = "fitness" if quality else "cost"
     header = [
         "Segment",
         "Steps",
         "Length",
         "Most often VBS",
-        "VBS cost",
-        "SBS cost",
-        "Unsolved",
-    ]
+        f"VBS {measure}",
+        f"SBS {measure}",
+    ] + ([] if quality else ["Unsolved"])
     tag = _tag(name, protocol)
-    caption = escape(f"{name}, {protocol}")
-    seed = f"stream seed {run['stream_seed']}"
-    return (
-        f"\\subsubsection{{Protocol {escape(protocol)}}}\n"
-        + _facts(
-            {
-                "Evaluated": f"{run['n_evaluated']} instances"
-                + (
-                    f" after {run['n_warmstart']} warm-start instances (SBS of "
-                    f"the warm start: {escape(run['sbs_algorithm_warmstart'])})"
-                    if run["n_warmstart"]
-                    else ""
-                ),
-                "Drift points": "steps " + _join(run["drift_points"])
-                if run["drift_points"]
-                else "none",
-                "Gradual transitions": _join(
-                    [f"[{a}, {b})" for a, b in run["transition_intervals"]]
-                ),
-            }
-        )
-        + table_env(
-            simple_tabular(header, rows, "lllrrrr"),
-            f"{caption}: segments between drift points ({seed}). Costs are means "
-            "over the segment; unsolved is the share of instances no algorithm "
-            "solves within the cutoff.",
+    seed = "" if run["stream_seed"] == 0 else f" (stream seed {run['stream_seed']})"
+    facts = {
+        "Evaluated": f"{run['n_evaluated']} instances"
+        + (
+            f" after {run['n_warmstart']} warm-start instances (SBS of "
+            f"the warm start: {escape(run['sbs_algorithm_warmstart'])})"
+            if run["n_warmstart"]
+            else ""
+        ),
+        "Drift points": "steps " + _join(run["drift_points"])
+        if run["drift_points"]
+        else "none",
+        "Gradual transitions": _join(
+            [f"[{a}, {b})" for a, b in run["transition_intervals"]]
+        ),
+    }
+    body = (
+        table_env(
+            simple_tabular(header, rows, "llrlrr" + ("" if quality else "r")),
+            f"Segments between drift points{seed}. "
+            + (
+                "Fitness values are means over the segment."
+                if quality
+                else "Costs are means over the segment; unsolved is the share of "
+                "instances no algorithm solves within the cutoff."
+            ),
         )
         + out.figure(
             plots.oracle_costs(ctx.steps, ctx.runs, name, protocol, width=out.width)[0],
             f"oracle_costs_{tag}",
-            f"{caption}: mean cost of the VBS and the SBS over the last "
-            f"{metrics.WINDOW} steps (fewer at the start; {seed}).",
+            f"Mean {measure} of the VBS and the SBS over the last "
+            f"{metrics.WINDOW} steps{'' if quality else ' (log scale)'}; drift "
+            "points dashed.",
         )
         + out.figure(
             plots.segment_oracle_share(
                 ctx.steps, ctx.runs, name, protocol, width=out.width
             )[0],
             f"segment_oracle_{tag}",
-            f"{caption}: how often each algorithm is the VBS, per segment.",
+            "How often each algorithm is the VBS, per segment (rows sum to 1).",
         )
     )
+    return facts, body
 
 
 def methods(ctx: Context, out: Out) -> str:
     """Methods, their protocols and selector configuration as written in the
     config (module paths, seeds and defaults left out)."""
-    runs = ctx.runs.sort_values(["method_family", "method"])
+    runs = ctx.runs
     family = (runs["method_family"] != runs["method"]).any()  # only with sweeps
+    several = runs["protocol"].nunique() > 1
     rows = []
-    for name, group in runs.groupby("method", sort=False):
+    for name in style.method_order(runs):
+        group = runs[runs["method"] == name]
         first = group.iloc[0]
         cells = [escape(name)]
         cells += [escape(first["method_family"])] if family else []
-        cells += [
-            _join(sorted(group["protocol"].unique())),
-            _call(first["selector_config"]),
-        ]
+        cells += [_join(sorted(group["protocol"].unique()))] if several else []
+        cells += [_call(first["selector_config"])]
         rows.append(" & ".join(cells) + r" \\")
-    header = ["Method"] + (["Family"] if family else []) + ["Protocols", "Selector"]
-    spec = "l" * (len(header) - 1) + r">{\raggedright\arraybackslash}p{0.62\linewidth}"
+    header = (
+        ["Method"]
+        + (["Family"] if family else [])
+        + (["Protocols"] if several else [])
+        + ["Selector"]
+    )
+    spec = "l" * (len(header) - 1) + r">{\raggedright\arraybackslash}p{0.7\linewidth}"
     tabular = "\n".join(
         [
             rf"\begin{{tabular}}{{{spec}}}",
@@ -476,167 +626,191 @@ def methods(ctx: Context, out: Out) -> str:
         + "\n"
         + table_env(
             tabular + "\n",
-            "Methods and their selector configuration as set in the config; "
+            "Methods and their selector settings as set in the config; "
             "everything else is at its default.",
         )
     )
 
 
-def performance(ctx: Context, out: Out) -> str:
-    """Cost and quality tables per protocol, fronts, and per stream and
-    protocol: cumulative regret, solver runs per instance, primary choices."""
-    text = "\\section{Performance}\n"
+def results(ctx: Context, out: Out) -> str:
+    """Per protocol the cost table; per stream and protocol cumulative regret,
+    solver runs per instance and primary choices."""
+    text = "\\section{Results}\n"
+    several = ctx.runs["protocol"].nunique() > 1
+    quality = _maximize(ctx.runs)
+    extra_cpu = "" if quality else "Extra CPU is the solver time of extra runs; "
     for protocol in sorted(ctx.runs["protocol"].unique()):
-        p = escape(protocol)
-        text += (
-            f"\\subsection{{Protocol {p}}}\n"
-            + table_env(
-                tables.cost_table(ctx.agg, protocol)[1],
-                f"{p}: quality and cost, mean $\\pm$ ci95 over seeds. Mean cost "
-                "is the PAR cost the user sees; solver runs count every run, extra "
-                "runs included; overhead is selector plus detector time.",
-            )
-            + table_env(
-                tables.main_table(ctx.frames.agg, protocol)[1],
-                f"{p}: main table (recovery in steps; not recovered counts drift "
-                "points).",
-            )
+        which = f", protocol {escape(protocol)}" if several else ""
+        text += table_env(
+            tables.cost_table(ctx.agg, protocol, quality)[1],
+            f"What the methods spend besides one solver run per instance{which} "
+            f"({_seeds(ctx.runs)}). {extra_cpu}Overhead is selector plus "
+            "detector time.",
         )
-    text += "\\subsection{Cost against quality}\n"
-    text += out.figure(
-        plots.front_grid(ctx.frames.agg, width=out.width)[0],
-        "front",
-        "Closed gap against solver CPU, mean and ci95 over seeds.",
-    )
-    text += out.figure(
-        plots.front_grid(ctx.frames.agg, overhead=True, width=out.width)[0],
-        "front_overhead",
-        "As before, with selector and detector time added to x.",
-    )
     for name, protocol in _pairs(ctx.runs):
-        tag, caption = _tag(name, protocol), escape(f"{name}, {protocol}")
+        tag = _tag(name, protocol)
         text += (
-            f"\\subsection{{{caption}}}\n"
+            _part(ctx, name, protocol)
             + out.figure(
                 plots.cumulative_regret(
                     ctx.cum_regret, ctx.runs, name, protocol, width=out.width
                 )[0],
                 f"cum_regret_{tag}",
-                f"{caption}: cumulative regret, mean and ci95 over seeds.",
+                f"Cumulative regret ({_seeds(ctx.runs)}); drift points dashed.",
             )
             + out.figure(
                 plots.runs_per_instance(
                     ctx.steps, ctx.runs, name, protocol, width=out.width
                 )[0],
                 f"runs_per_instance_{tag}",
-                f"{caption}: share of instances by number of solver runs.",
+                "Share of instances by number of solver runs.",
             )
             + out.figure(
                 plots.selection_heatmap(
                     ctx.steps, ctx.runs, name, protocol, width=out.width
                 )[0],
                 f"selection_{tag}",
-                f"{caption}: primary choice per method against the VBS.",
+                "Share of instances on which each algorithm was the primary "
+                "choice, per method, and how often it is the VBS (first row). "
+                "Rows sum to 1.",
             )
         )
     return text
 
 
 def drift(ctx: Context, out: Out) -> str:
-    """Per stream and protocol with drift: regret and extra-run curves,
+    """Per stream and protocol with drift: regret per method, extra-run rate,
     detection, and per-segment and per-drift-point tables."""
-    text = "\\section{Drift adaptation}\n"
+    # its own page: it starts with floats, which would leave the heading alone
+    text = "\\clearpage\n\\section{Drift adaptation}\n"
+    several = ctx.runs["protocol"].nunique() > 1
     for protocol in sorted(ctx.runs["protocol"].unique()):
-        detection, latex = tables.detection_table(ctx.frames.agg, protocol)
+        detection, latex = tables.detection_table(ctx.agg, protocol)
         if not detection.empty:
+            which = f", protocol {escape(protocol)}" if several else ""
             text += table_env(
                 latex,
-                f"{escape(protocol)}: detection delay (steps), missed drifts and "
-                f"false alarms (tolerance {metrics.DETECTION_TOLERANCE} steps).",
+                f"Drift detection{which}: delay in steps, missed drift points and "
+                f"false alarms (a signal counts within "
+                f"{metrics.DETECTION_TOLERANCE} steps of a drift point).",
             )
     for name, protocol in _pairs(ctx.runs):
         runs = _select(ctx.runs, name, protocol)
         if not runs["drift_points"].map(len).any():
             continue
-        tag, caption = _tag(name, protocol), escape(f"{name}, {protocol}")
-        text += f"\\subsection{{{caption}}}\n"
+        tag = _tag(name, protocol)
+        signals = (
+            " Ticks at the bottom are drift signals."
+            if runs["uses_detector"].any()
+            else ""
+        )
+        text += _part(ctx, name, protocol)
         text += out.figure(
-            plots.regret_curves(
-                ctx.frames.regret, ctx.runs, name, protocol, width=out.width
+            plots.small_multiples(
+                ctx.frames.regret,
+                ctx.runs,
+                name,
+                protocol,
+                "Rolling regret",
+                width=out.width,
             )[0],
             f"regret_{tag}",
-            f"{caption}: rolling regret ({metrics.WINDOW} steps); drift points "
-            "dashed, transitions shaded.",
+            f"Rolling regret ({metrics.WINDOW} steps), one panel per method with "
+            f"the others in grey; drift points dashed.{signals}",
         )
-        text += out.figure(
-            plots.extra_run_rate(
-                ctx.frames.extra_runs, ctx.runs, name, protocol, width=out.width
-            )[0],
-            f"extra_runs_{tag}",
-            f"{caption}: rolling share of instances with more than one run.",
-        )
-        if runs["uses_detector"].any():
+        extra = ctx.agg[
+            (ctx.agg["stream"] == name)
+            & (ctx.agg["protocol"] == protocol)
+            & (ctx.agg["extra_run_rate_mean"] > 0)
+        ]
+        if not extra.empty:
             text += out.figure(
-                plots.detection_raster(ctx.runs, name, protocol, width=out.width)[0],
-                f"raster_{tag}",
-                f"{caption}: drift signals per method and seed.",
+                plots.extra_run_rate(
+                    ctx.frames.extra_runs,
+                    ctx.runs,
+                    name,
+                    protocol,
+                    methods=style.method_order(extra),
+                    width=out.width,
+                )[0],
+                f"extra_runs_{tag}",
+                f"Share of instances with more than one solver run (last "
+                f"{metrics.WINDOW} steps), for the methods that run extra solvers.",
             )
+
         segments = _select(ctx.segments, name, protocol)
         labels = segments.drop_duplicates("segment").set_index("segment")["label"]
-        headers = {i: escape(label) for i, label in labels.items()}
+        short = dict(zip(labels.index, _short(labels.tolist()), strict=True))
         text += table_env(
             tables.pivot_table(
-                segments, "segment", "closed_gap", headers=headers, higher=True
+                segments,
+                "segment",
+                "closed_gap",
+                headers={i: escape(s) for i, s in short.items()},
+                higher=True,
             )[1],
-            f"{caption}: closed gap per segment (SBS of the whole stream).",
+            "Closed gap per segment (against the SBS of the whole stream).",
         )
         points = _select(ctx.drift, name, protocol)
         point_labels = points.drop_duplicates("drift_index").set_index("drift_index")
-        headers = {i: f"$p={row.drift_point}$" for i, row in point_labels.iterrows()}
-        legend = "; ".join(
-            f"$p={row.drift_point}$: {escape(labels.get(i, ''))}$\\to$"
-            f"{escape(labels.get(i + 1, ''))}"
+        headers = {
+            i: f"\\shortstack{{{escape(short.get(i, ''))}$\\to$"
+            f"{escape(short.get(i + 1, ''))}\\\\ \\footnotesize step "
+            f"{row.drift_point}}}"
             for i, row in point_labels.iterrows()
-        )
-        for metric, higher, what in (
+        }
+        extra_methods = set(extra["method"])
+        for metric, higher, fmt, rows, what in (
             (
                 "recovery",
                 False,
-                "recovery in steps (-- never recovered or not measurable)",
+                "f0",
+                points,
+                f"Steps until the closed gap per window ({metrics.WINDOW} steps) "
+                "is back to its level before the drift point and holds for "
+                f"{metrics.HOLD} windows (-- = not before the next drift point, "
+                "or not measurable).",
             ),
-            ("peak_regret", False, "peak rolling regret after the drift point"),
+            (
+                "peak_regret",
+                False,
+                "f3" if _maximize(runs) else "f0",
+                points,
+                "Highest rolling regret between a drift point and the next one.",
+            ),
             (
                 "extra_run_rate_change",
                 None,
-                "change of the extra-run rate, "
-                f"{metrics.WINDOW} steps after minus before the drift point",
+                "pct",
+                points[points["method"].isin(extra_methods)],
+                f"Change of the extra-run rate in percentage points: "
+                f"{metrics.WINDOW} steps after minus before the drift point.",
             ),
         ):
+            if rows.empty:
+                continue
             text += table_env(
                 tables.pivot_table(
-                    points, "drift_index", metric, headers=headers, higher=higher
+                    rows,
+                    "drift_index",
+                    metric,
+                    headers=headers,
+                    higher=higher,
+                    fmt=fmt,
                 )[1],
-                f"{caption}: {what}. Drift points: {legend}.",
+                what,
             )
     return text
 
 
 def statistics(ctx: Context, out: Out, reference: str = "online-pairwise") -> str:
     """Mean ranks, Friedman and Wilcoxon against ``reference`` on closed gap,
-    over the (stream, protocol) cells that every compared method has."""
-    table = ctx.table
-    cells = table.groupby(["stream", "protocol"]).ngroups
-    present = table.groupby("method")[["stream", "protocol"]].apply(
-        lambda f: len(f.drop_duplicates())
-    )
-    compared = table[table["method"].isin(present[present == cells].index)]
-    n = compared.groupby(["stream", "protocol"]).ngroups
+    over the (stream, protocol) cells that every compared method has. Empty if
+    there are too few cells or methods (the summary says so)."""
+    if not _testable(ctx):
+        return ""
+    compared, n = _cells(ctx)
     text = "\\section{Statistics}\n"
-    if n < 3 or compared["method"].nunique() < 3:
-        return text + (
-            f"Only {n} (stream, protocol) cells with every method; the tests need "
-            "at least three cells and three methods, so none are reported.\n"
-        )
     ranks = stats.mean_ranks(compared)
     text += table_env(
         simple_tabular(["Method", "Mean rank", "Cells"], ranks.values.tolist(), "lrr"),
@@ -658,33 +832,77 @@ def statistics(ctx: Context, out: Out, reference: str = "online-pairwise") -> st
 
 
 def appendix(ctx: Context, out: Out) -> str:
-    """Every run, and the resolved selector config of every method."""
+    """Metric definitions, provenance and every run."""
+    runs = ctx.runs
+    first = runs.iloc[0]
+    env = first["environment"] or {}
+    final, why = _is_final(runs)
+    repo, asf = (_join(runs[c].dropna().str[:10].unique()) for c in COMMITS)
+    provenance = {
+        "Status": ("Final: " if final else "Pilot: ") + escape(why) + ".",
+        "Config": f"{escape(first['config_file'])}, hash "
+        f"\\texttt{{{escape(str(first['config_hash'])[:10])}}}",
+        "Code": f"experiments \\texttt{{{repo}}}, ASF \\texttt{{{asf}}}",
+        "Environment": escape(
+            f"Python {env.get('python', '?')}; "
+            + ", ".join(f"{k} {v}" for k, v in (env.get("packages") or {}).items())
+        ),
+        "Run dates": f"{runs['created_utc'].min()[:10]} to "
+        f"{runs['created_utc'].max()[:10]}",
+    }
+    order = {m: i for i, m in enumerate(style.method_order(ctx.table))}
+    table = ctx.table.assign(order=ctx.table["method"].map(order)).sort_values(
+        ["stream", "protocol", "order", "seed", "stream_seed"]
+    )
+    keys = [c for c in ("stream", "protocol") if table[c].nunique() > 1]
+    seeds = "stream_seed" if table["stream_seed"].nunique() > 1 else None
+    header = [k.capitalize() for k in keys] + ["Method", "Seed"]
+    header += ["Stream seed"] if seeds else []
+    quality = _maximize(runs)
+    header += ["Closed gap"] + ([] if quality else ["CPU (h)"])
+    header += ["Signals", "Retrains"]
     rows = [
-        [r.run_id, r.closed_gap, r.solver_cpu, r.n_drift_signals, r.n_retrains]
-        for r in ctx.table.sort_values("run_id").itertuples()
+        [getattr(r, k) for k in keys]
+        + [r.method, r.seed]
+        + ([r.stream_seed] if seeds else [])
+        + [tables.number(r.closed_gap, "f2")]
+        + ([] if quality else [tables.number(r.solver_cpu, "hours")])
+        + [
+            tables.number(r.n_drift_signals, "count"),
+            tables.number(r.n_retrains, "count"),
+        ]
+        for r in table.itertuples()
     ]
-    header = ["Run", "Closed gap", "Solver CPU", "Signals", "Retrains"]
+    n_numbers = 3 if quality else 4
+    spec = "l" * (len(header) - n_numbers) + "r" * n_numbers
+    definitions = METRIC_DEFINITIONS
+    if quality:
+        definitions = QUALITY_DEFINITIONS | {
+            k: v
+            for k, v in METRIC_DEFINITIONS.items()
+            if k not in QUALITY_DROPPED and k not in QUALITY_DEFINITIONS
+        }
     tabular = (
-        simple_tabular(header, rows, "lrrrr")
+        simple_tabular(header, rows, spec)
         .replace("\\begin{tabular}", "\\begin{longtable}")
         .replace("\\end{tabular}", "\\end{longtable}")
     )
-    text = "\\appendix\n\\section{Runs}\n{\\small\n" + tabular + "}\n"
-    text += "\\section{Selector configurations}\n"
-    for name, runs in ctx.runs.groupby("method", sort=True):
-        config = json.dumps(runs.iloc[0]["selector_config"], indent=2)
-        text += (
-            f"\\subsection*{{{escape(name)}}}\n{{\\footnotesize\n"
-            f"\\begin{{verbatim}}\n{config}\n\\end{{verbatim}}\n}}\n"
-        )
-    return text
+    return (
+        "\\appendix\n\\section{Metrics}\n"
+        + _facts(definitions)
+        + "\\section{Provenance}\n"
+        + _facts(provenance)
+        + "\\section{Runs}\n{\\small\n"
+        + tabular
+        + "}\n"
+    )
 
 
 SECTIONS: dict[str, Section] = {
-    "overview": overview,
+    "summary": summary,
     "stream": stream,
     "methods": methods,
-    "performance": performance,
+    "results": results,
     "drift": drift,
     "statistics": statistics,
     "appendix": appendix,
@@ -694,8 +912,25 @@ PREAMBLE = r"""\documentclass[11pt,a4paper]{article}
 \usepackage[margin=2cm]{geometry}
 \usepackage[T1]{fontenc}
 \usepackage{lmodern}
-\usepackage{array,booktabs,graphicx,float,longtable}
+\usepackage{microtype}
+\usepackage{array,booktabs,graphicx,longtable}
+\usepackage[section]{placeins}
+\usepackage[font=small,labelfont=bf]{caption}
+\usepackage{needspace}
 \usepackage[hidelinks]{hyperref}
+\setlength{\parindent}{0pt}
+% many floats: let them fill pages, and start float-only pages at the top
+\renewcommand{\topfraction}{0.9}
+\renewcommand{\bottomfraction}{0.8}
+\renewcommand{\textfraction}{0.07}
+\renewcommand{\floatpagefraction}{0.75}
+\setcounter{topnumber}{3}
+\setcounter{totalnumber}{5}
+\makeatletter\setlength{\@fptop}{0pt}\makeatother
+% a section heading never sits alone at the bottom of a page
+\let\oldsection\section
+\renewcommand{\section}{\Needspace{0.3\textheight}\oldsection}
+\renewcommand{\arraystretch}{1.1}
 """
 
 
@@ -725,13 +960,28 @@ def write_report(
     tex = target.dir / "report.tex"
     tex.write_text(
         PREAMBLE
-        + f"\\title{{Experiment report: {title}}}\n\\date{{{date}}}\n"
-        + "\\begin{document}\n\\maketitle\n\\tableofcontents\n\\clearpage\n"
+        + "\\begin{document}\n"
+        + f"{{\\LARGE\\bfseries Experiment report: {title}}}\\\\[0.3em]\n"
+        + f"{{\\small Generated {date}}}\n\\vspace{{1em}}\n\n"
         + body
         + "\n\\end{document}\n",
         encoding="utf-8",
     )
     return tex
+
+
+def method_order_from_config(experiment_dir: str | Path, runs: pd.DataFrame) -> list:
+    """The method families in the order of the experiment's config file, looked
+    up in ``configs/`` next to ``results/`` (empty if it is not found)."""
+    names = runs["config_file"].dropna().unique()
+    if len(names) != 1:
+        return []
+    root = Path(experiment_dir).resolve().parent.parent
+    for path in (root / "configs" / names[0], Path("configs") / names[0]):
+        if path.is_file():
+            config = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+            return [m.get("name") for m in config.get("methods") or []]
+    return []
 
 
 def compile_pdf(tex: Path, timeout: float = 600) -> Path | None:
@@ -786,6 +1036,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     sections = args.sections.split(",")
+    style.pin_order(method_order_from_config(args.experiment_dir, ctx.runs))
     if args.per_protocol:
         # one colour per family across all protocol reports
         style.pin_families(ctx.runs["method_family"])

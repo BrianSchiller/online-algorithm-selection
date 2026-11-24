@@ -7,6 +7,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 
+import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 import pytest  # noqa: E402
@@ -34,7 +35,8 @@ def test_main_writes_every_section_and_figure(tmp_path):
     )
     included = re.findall(r"\\includegraphics\[[^]]*\]\{([^}]*)\}", body)
     assert included and all((tmp_path / f).exists() for f in included)
-    assert "raster_sudden_cold.pdf" in " ".join(included)  # rook has a detector
+    assert "regret_sudden_cold.pdf" in " ".join(included)
+    assert "Ticks at the bottom are drift signals" in body  # rook has a detector
 
 
 def test_per_protocol_reports(tmp_path, monkeypatch):
@@ -61,6 +63,35 @@ def test_restrict_keeps_only_one_protocol(ctx):
     assert "static" not in set(cold.agg["method"])  # static is warm only
 
 
+def test_figures_lose_their_titles(ctx, tmp_path):
+    out = report.Out(tmp_path)
+    fig, ax = plt.subplots()
+    ax.set_title("x")
+    out.figure(fig, "a", "caption")
+    assert ax.get_title() == ""
+    fig, ax = plt.subplots()
+    ax.set_title("x")
+    out.figure(fig, "b", "caption", keep_titles=True)
+    assert ax.get_title() == "x"
+
+
+def test_short_labels_drop_the_shared_prefix():
+    assert report._short(["SAT12-HAND", "SAT12-INDU"]) == ["HAND", "INDU"]
+    assert report._short(["A", "A"]) == ["A", "A"]
+    assert report._short(["S1", "S2"]) == ["S1", "S2"]  # no separator to cut at
+
+
+def test_method_order_from_config(tmp_path):
+    (tmp_path / "configs").mkdir()
+    (tmp_path / "configs" / "c.yaml").write_text(
+        "methods:\n  - name: zeta\n  - name: alpha\n", encoding="utf-8"
+    )
+    runs = pd.DataFrame({"config_file": ["c.yaml"]})
+    exp = tmp_path / "results" / "exp"
+    assert report.method_order_from_config(exp, runs) == ["zeta", "alpha"]
+    assert report.method_order_from_config(exp, runs.assign(config_file="x")) == []
+
+
 def test_write_report_rejects_unknown_section(ctx, tmp_path):
     with pytest.raises(ValueError, match="unknown sections"):
         report.write_report(ctx, tmp_path, ["overview", "nope"])
@@ -68,8 +99,8 @@ def test_write_report_rejects_unknown_section(ctx, tmp_path):
 
 def test_segment_labels():
     drift = {"builder": "grouped", "params": {"schedule": ["A", ["A", "B"], "B"]}}
-    assert metrics.segment_labels(drift, 3) == ["A", "A→B", "B"]
-    assert metrics.segment_labels(drift, 2) == ["A→B", "B"]  # warm start ate "A"
+    assert metrics.segment_labels(drift, 3) == ["A", "A+B", "B"]
+    assert metrics.segment_labels(drift, 2) == ["A+B", "B"]  # warm start ate "A"
     assert metrics.segment_labels(drift, 4) == ["S1", "S2", "S3", "S4"]
     assert metrics.segment_labels(None, 2) == ["S1", "S2"]
     assert metrics.segment_labels(float("nan"), 1) == ["S1"]
@@ -116,6 +147,22 @@ def test_run_count_shares_sum_to_one(ctx):
     assert shares.loc["rook", 2] == 1.0  # rook always runs two
 
 
+def test_solved_rate():
+    runs = pd.DataFrame(
+        {
+            "run_id": ["a", "b"],
+            "par_factor": [10.0, 10.0],
+            "cutoff": [5.0, 5.0],
+            "maximize": [False, True],
+        }
+    )
+    steps = pd.DataFrame(
+        {"run_id": ["a", "a", "a", "a", "b"], "user_cost": [1.0, 50.0, 4.9, 50.0, 3.0]}
+    )
+    rate = report.solved_rate(steps, runs).set_index("run_id")["solved_rate"]
+    assert rate["a"] == 0.5 and np.isnan(rate["b"])
+
+
 def test_total_runs_counts_extra_runs(ctx):
     rook = ctx.table[ctx.table["method"] == "rook"]
     assert (rook["total_runs"] == 2 * rook["n_evaluated"]).all()
@@ -148,6 +195,20 @@ def test_escape():
 
 @pytest.mark.skipif(shutil.which("latexmk") is None, reason="needs latexmk")
 def test_compile_pdf(ctx, tmp_path):
-    tex = report.write_report(ctx, tmp_path, ["overview", "methods", "appendix"])
+    tex = report.write_report(ctx, tmp_path, ["summary", "methods", "appendix"])
     pdf = report.compile_pdf(tex)
     assert pdf is not None and pdf.read_bytes().startswith(b"%PDF")
+
+
+def test_quality_report_speaks_of_fitness(ctx, tmp_path):
+    """Maximisation (bin packing): fitness instead of cost, no cutoff, solved or
+    CPU columns, and the front over solver runs."""
+    quality = ctx._replace(runs=ctx.runs.assign(maximize=True))
+    report.write_report(quality, tmp_path, ["summary", "stream", "appendix"])
+    text = "".join(
+        p.read_text(encoding="utf-8") for p in (tmp_path / "sections").iterdir()
+    )
+    assert "Mean fitness" in text and "VBS fitness" in text
+    assert "solver runs per instance" in text
+    for runtime_only in ("Solved", "CPU (h)", "Unsolved", "cutoff", "log scale"):
+        assert runtime_only not in text, runtime_only
