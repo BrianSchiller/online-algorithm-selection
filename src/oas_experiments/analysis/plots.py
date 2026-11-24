@@ -14,6 +14,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from matplotlib.axes import Axes
+from matplotlib.colors import BoundaryNorm
 from matplotlib.figure import Figure
 
 from oas_experiments.analysis.style import (
@@ -311,6 +312,9 @@ def detection_raster(
 # --- report figures -------------------------------------------------------
 
 SEQUENTIAL = "Blues"  # one hue, light to dark: shares and counts
+# Colour bins of share heatmaps: most shares are small, so the bins are fine
+# below 0.1 and coarse above; everything above 0.5 gets the darkest colour.
+SHARE_BINS = (0, 0.01, 0.02, 0.03, 0.05, 0.075, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5, 1)
 
 
 def cumulative_regret(
@@ -412,25 +416,29 @@ def runs_per_instance(
 
 
 def _heatmap(ax: Axes, frame: pd.DataFrame, label: str) -> None:
-    """Shares in [0, 1] as cells, with the value printed where it is visible."""
-    image = ax.imshow(
-        frame.to_numpy(float), cmap=SEQUENTIAL, vmin=0, vmax=1, aspect="auto"
-    )
+    """Shares in [0, 1] as cells, every non-zero share printed (``.04``), so a
+    row can be read to its sum of 1. Colours come in :data:`SHARE_BINS`: fine
+    below 0.1, one colour for 0.4-0.5 and the darkest for everything above."""
+    cmap = plt.get_cmap(SEQUENTIAL, len(SHARE_BINS) - 1)
+    norm = BoundaryNorm(SHARE_BINS, cmap.N)
+    image = ax.imshow(frame.to_numpy(float), cmap=cmap, norm=norm, aspect="auto")
     ax.set_xticks(range(frame.shape[1]), frame.columns, rotation=60, ha="right")
     ax.set_yticks(range(frame.shape[0]), frame.index)
     ax.grid(False)
     for (i, j), value in np.ndenumerate(frame.to_numpy(float)):
-        if value >= 0.05:
+        if value >= 0.005:  # prints as at least .01
             ax.text(
                 j,
                 i,
-                f"{value:.2f}",
+                f"{value:.2f}".removeprefix("0"),
                 ha="center",
                 va="center",
                 fontsize=6,
-                color="white" if value > 0.6 else "0.15",
+                color="white" if value >= 0.3 else "0.15",
             )
-    ax.figure.colorbar(image, ax=ax, label=label, shrink=0.8)
+    # uniform spacing: every bin gets the same height, so the fine low bins show
+    bar = ax.figure.colorbar(image, ax=ax, label=label, shrink=0.8, spacing="uniform")
+    bar.set_ticks(SHARE_BINS, labels=[f"{b:g}" for b in SHARE_BINS])
 
 
 def _top_columns(frame: pd.DataFrame, top: int) -> pd.DataFrame:
