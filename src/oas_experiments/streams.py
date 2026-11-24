@@ -2,8 +2,8 @@
 
 A stream kind is a function ``(params, seed, drift) -> InstanceStream``.
 ``aslib`` builds streams from ASlib scenarios, with the drift construction in
-the ``drift`` block of a stream entry (``{builder, params}``). Bin packing and
-SATCOMP are converted to ASlib format and then use the same kind.
+the ``drift`` block of a stream entry (``{builder, params}``). ``bin_packing``
+loads ``.bpp`` files and shares the same drift construction.
 
 ASF is imported inside the builders so that importing this module, and hence
 listing the runs of a config, stays cheap.
@@ -24,6 +24,9 @@ StreamBuilder = Callable[
 ]
 
 STREAM_KINDS: dict[str, StreamBuilder] = {}
+
+#: Kinds whose performance is a quality to maximise (selectors need maximize).
+MAXIMIZE_KINDS = frozenset({"bin_packing"})
 
 
 def stream_kind(name: str) -> Callable[[StreamBuilder], StreamBuilder]:
@@ -54,34 +57,80 @@ def _aslib(
     """
     from pathlib import Path
 
-    import numpy as np
-    from asf.online.streams import (
-        InstanceStream,
-        combine_scenarios,
-        grouped_stream,
-        sorted_stream,
-    )
+    from asf.online.streams import combine_scenarios
     from asf.online.streams.loaders import load_aslib_raw
 
-    try:
-        root, names = Path(params["root"]), params["scenarios"]
-    except KeyError as exc:
-        raise ValueError(f"Stream kind 'aslib' needs the parameter {exc}.") from None
-    unknown = sorted(set(params) - {"root", "scenarios", "standardize"})
-    if unknown:
-        raise ValueError(f"Stream kind 'aslib' has no parameter(s) {unknown}.")
-    n_standardize = params.get("standardize")
+    _check_params("aslib", params, {"root", "scenarios"})
+    root, names = Path(params["root"]), params["scenarios"]
     names = [names] if isinstance(names, str) else list(names)
     features, performance, cutoff, scenario = combine_scenarios(
         {name: load_aslib_raw(str(root / name)) for name in names}
     )
+    return _ordered_stream(
+        features, performance, cutoff, seed, drift, params.get("standardize"), scenario
+    )
+
+
+@stream_kind("bin_packing")
+def _bin_packing(
+    params: dict[str, Any], seed: int, drift: dict[str, Any] | None
+) -> InstanceStream:
+    """Online bin packing (Rook et al.): a folder of ``.bpp`` files.
+
+    ``params``: ``root`` (the folder, e.g. ``BppInstances/E_120_N_40_60``)
+    and optionally ``standardize``. Performance is the Falkenauer fitness of
+    BF, FF, NF and WF (higher is better, cutoff ``inf``), so every selector
+    needs ``maximize: true``. ``drift`` works as for ``aslib``; grouped
+    labels default to ``best_algorithm`` (the fittest heuristic).
+    """
+    from asf.online.streams.loaders import load_bin_packing
+
+    _check_params("bin_packing", params, {"root"})
+    features, performance, cutoff = load_bin_packing(str(params["root"]))
+    return _ordered_stream(
+        features,
+        performance,
+        cutoff,
+        seed,
+        drift,
+        params.get("standardize"),
+        maximize=True,
+    )
+
+
+def _check_params(kind: str, params: dict[str, Any], required: set[str]) -> None:
+    """Required parameters plus the optional ``standardize``, nothing else."""
+    missing = sorted(required - set(params))
+    if missing:
+        raise ValueError(f"Stream kind {kind!r} needs the parameter(s) {missing}.")
+    unknown = sorted(set(params) - required - {"standardize"})
+    if unknown:
+        raise ValueError(f"Stream kind {kind!r} has no parameter(s) {unknown}.")
+
+
+def _ordered_stream(
+    features: Any,
+    performance: Any,
+    cutoff: float,
+    seed: int,
+    drift: dict[str, Any] | None,
+    n_standardize: int | None,
+    scenario: Any = None,
+    maximize: bool = False,
+) -> InstanceStream:
+    """Order loaded instances by the ``drift`` block (random order without
+    one), then optionally standardise. ``scenario`` holds source labels
+    (default grouping when given); ``maximize`` marks quality data."""
+    import numpy as np
+    from asf.online.streams import InstanceStream, grouped_stream, sorted_stream
+
     if drift is None:
         order = np.random.default_rng(seed).permutation(len(features))
         stream = InstanceStream(features.iloc[order], performance.iloc[order], cutoff)
     elif drift["builder"] == "grouped":
         rest = dict(drift.get("params") or {})
-        spec = rest.pop("labels", "scenario")
-        labels = _labels(spec, features, performance, scenario)
+        spec = rest.pop("labels", "best_algorithm" if scenario is None else "scenario")
+        labels = _labels(spec, features, performance, scenario, maximize)
         stream = grouped_stream(
             features, performance, cutoff, labels, seed=seed, **rest
         )
@@ -123,15 +172,18 @@ def standardize(stream: InstanceStream, n: int) -> None:
     stream.features = (features - head.mean()) / std.where(std > 0, 1.0)
 
 
-def _labels(spec: Any, features: Any, performance: Any, scenario: Any) -> Any:
+def _labels(
+    spec: Any, features: Any, performance: Any, scenario: Any, maximize: bool = False
+) -> Any:
     """Group labels of a ``grouped`` builder."""
     import pandas as pd
     from asf.online.streams import cluster_labels
 
-    if spec == "scenario":
+    if spec == "scenario" and scenario is not None:
         return scenario
     if spec == "best_algorithm":
-        return performance.idxmin(axis=1)  # ties: first algorithm
+        # ties: first algorithm
+        return performance.idxmax(axis=1) if maximize else performance.idxmin(axis=1)
     if isinstance(spec, dict) and set(spec) == {"clusters"}:
         # fixed seed: cluster ids stay the same across stream seeds
         return cluster_labels(features, spec["clusters"], seed=0)

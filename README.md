@@ -24,7 +24,7 @@ src/oas_experiments/
   list.py                   python -m oas_experiments.list   (run ids of a config)
   launch.py                 python -m oas_experiments.launch (all missing runs, in parallel)
   results.py                load an experiment into DataFrames
-  datasets/                 placeholder: dataset preparation (bin packing, SATCOMP)
+  datasets/                 placeholder: dataset preparation (SATCOMP)
   analysis/                 metrics.py, stats.py (see Metrics); plots.py, tables.py, style.py
   figures.py                python -m oas_experiments.figures (all figures and tables)
   report.py                 python -m oas_experiments.report  (LaTeX/PDF report of an experiment)
@@ -203,6 +203,7 @@ of a cost-versus-quality curve can be grouped.
 | kind | builds | seed goes to |
 | --- | --- | --- |
 | `aslib` | one or more ASlib scenarios (`root`, `scenarios`), ordered by the `drift` block; without one, in random order | sampling and shuffling |
+| `bin_packing` | a folder of `.bpp` files (`root`), performance = Falkenauer fitness (maximised, cutoff inf); `drift` as for `aslib` | sampling and shuffling |
 
 For `aslib` the `drift` block chooses how the
 instances are ordered (see `configs/example_sat12_switching.yaml` and ASF's
@@ -227,6 +228,12 @@ instances are ordered (see `configs/example_sat12_switching.yaml` and ASF's
 `nclauses / nvars`) or `key: {runtime: [algorithms] | all, agg: max}`, with
 optional `ascending` and `jitter`. Clusters are always computed with seed 0,
 so a cluster id means the same cluster for every stream seed.
+
+`bin_packing` reads Rook et al.'s instances (`BppInstances/E_120_N_40_60` is
+the set their code uses). Its performance is a quality, so every method on it
+needs `maximize: true` (building the selector fails otherwise), and grouped
+`labels` default to `best_algorithm`, the fittest heuristic. Rook's three
+streams are in `configs/rook_bpp.yaml`.
 
 ## What a result contains
 

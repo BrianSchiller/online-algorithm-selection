@@ -1,0 +1,70 @@
+# Rook et al. (FOGA 2025) bin-packing streams.
+#
+# Their code uses BppInstances/E_120_N_40_60 (120 items, sizes N(40, 60),
+# capacity 150), although the paper says U(20, 100); the loader reproduces their
+# features and Falkenauer fitness exactly. Performance is a quality, so every
+# method needs `maximize: true` (checked when the selector is built).
+#
+#   python -m oas_experiments.list   configs/rook_bpp.yaml
+#   python -m oas_experiments.launch configs/rook_bpp.yaml --jobs 8
+name: rook_bpp
+
+evaluation:
+  par_factor: 10.0                       # unused: cutoff is inf
+  result_mode: best_of_scheduled         # Rook: the best of the parallel runs counts
+
+seeds: [0]
+
+protocols:
+  - {name: warm500, type: warm, n_warmstart: 500}   # Rook's 500-instance reference period
+
+streams:
+  # smoothWFFF: all 4000 instances by max(FF, WF) fitness, best first.
+  - name: bpp-incremental
+    kind: bin_packing
+    seeds: [0, 1]                           # deterministic order (Rook: one ordering)
+    params: &bpp
+      root: ../../BPP/BppInstances/E_120_N_40_60   # relative to the working directory
+    drift:
+      builder: sorted
+      params:
+        key: {runtime: [FF, WF], agg: max}       # "runtime" = the performance column
+        ascending: false
+
+  # sudden3: 500 reference instances won by BF/FF/WF, the other 2500 of them,
+  # then all 1000 NF instances. Rook samples the reference exactly balanced
+  # (166 each); here groups are sampled in proportion to their (equal) size.
+  - name: bpp-sudden
+    kind: bin_packing
+    seeds: [0, 1]               # Rook: 50
+    params: *bpp
+    drift:
+      builder: grouped
+      params:
+        schedule: [[BF, FF, WF], [BF, FF, WF], NF]   # labels: best_algorithm (default)
+        segment_length: [500, 2500, 1000]
+
+  # recurrent200: 500 reference (BF/FF), then 300 BF/FF and 200 WF/NF, three
+  # times, ending with 300 BF/FF. Rook may reuse instances across phases; here
+  # no instance repeats.
+  - name: bpp-recurrent
+    kind: bin_packing
+    seeds: [0, 1]               # Rook: 50
+    params: *bpp
+    drift:
+      builder: grouped
+      params:
+        schedule: [[BF, FF], [BF, FF], [WF, NF], [BF, FF], [WF, NF], [BF, FF], [WF, NF], [BF, FF]]
+        segment_length: [500, 300, 200, 300, 200, 300, 200, 300]
+
+methods:
+  # Rook's fixedretrain50: one extra run per instance, retrain every 50.
+  - name: rook-retrain50
+    selector:
+      class: asf.online.selectors.OnlinePairwiseSelector
+      params:
+        variant: paper
+        n_additional: 1
+        retrain_every: 50
+        maximize: true
+        model_class: {type: sklearn.tree.DecisionTreeClassifier}

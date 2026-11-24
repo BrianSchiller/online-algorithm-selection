@@ -22,6 +22,8 @@ import importlib
 import re
 from typing import TYPE_CHECKING, Any
 
+from oas_experiments.streams import MAXIMIZE_KINDS
+
 if TYPE_CHECKING:
     from asf.online.base import AbstractOnlineSelector
     from asf.online.streams import InstanceStream
@@ -107,6 +109,13 @@ def build_selector(run: RunSpec, stream: InstanceStream) -> AbstractOnlineSelect
     params = build(resolve_placeholders(run.selector["params"], context))
     cls = import_object(run.selector["class"])
     try:
-        return cls(**params, random_state=run.seed)
+        selector = cls(**params, random_state=run.seed)
     except TypeError as exc:
         raise BuildError(f"Cannot construct {run.selector['class']}: {exc}") from exc
+    # a minimising selector on quality data would silently pick the worst algorithm
+    if run.stream_kind in MAXIMIZE_KINDS and not selector.maximize:
+        raise BuildError(
+            f"Stream kind {run.stream_kind!r} holds qualities to maximise; "
+            f"set `maximize: true` in the params of method {run.method!r}."
+        )
+    return selector

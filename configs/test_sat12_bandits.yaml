@@ -1,0 +1,94 @@
+# Bandit comparison on the test_sat12 stream: all UCB and Thompson sampling
+# presets of asf.online.selectors.bandits (preset defaults), no pairwise selectors.
+#
+# SAT12-HAND, -INDU and -RAND (same 115 features, 31 solvers, cutoff 1200)
+# played as half of each scenario, then the other halves: five sudden switches
+# with recurring scenarios. Features are imputed and standardised with the
+# first 100 instances (no runtimes), so the linear bandits get usable contexts.
+#
+#   python -m oas_experiments.launch configs/test_sat12_bandits.yaml --jobs 8
+#   python -m oas_experiments.figures results/test_sat12_bandits --out figures/test_sat12_bandits
+name: test_sat12_bandits
+
+evaluation:
+  par_factor: 10.0
+  result_mode: best_of_scheduled
+
+seeds: [0]
+
+protocols:
+  - {name: cold, type: cold}
+
+streams:
+  - name: sat12-halves
+    kind: aslib
+    seeds: [0]
+    params:
+      root: ../../aslib_data
+      scenarios: [SAT12-HAND, SAT12-INDU, SAT12-RAND]
+      standardize: 100
+    drift:
+      builder: grouped
+      params:
+        labels: scenario
+        schedule: [SAT12-HAND, SAT12-INDU, SAT12-RAND, SAT12-HAND, SAT12-INDU, SAT12-RAND]
+
+methods:
+  # --- bandits: one run per instance --------------------------------------
+  - name: ucb
+    selector:
+      class: asf.online.selectors.UCBSelector
+      params: {budget: "${stream.cutoff}"}
+
+  - name: ts
+    selector:
+      class: asf.online.selectors.ThompsonSamplingSelector
+      params: {budget: "${stream.cutoff}"}
+
+  - name: linucb
+    selector:
+      class: asf.online.selectors.LinUCBSelector
+      params: {budget: "${stream.cutoff}"}
+
+  - name: lints
+    selector:
+      class: asf.online.selectors.LinTSSelector
+      params: {budget: "${stream.cutoff}"}
+
+  # --- non-stationary UCB ------------------------------------------------
+  - name: ds-ucb
+    selector:
+      class: asf.online.selectors.DiscountedUCBSelector
+      params: {budget: "${stream.cutoff}", gamma: 0.99}
+
+  - name: sw-ucb
+    selector:
+      class: asf.online.selectors.SlidingWindowUCBSelector
+      params: {budget: "${stream.cutoff}", window: 100}
+
+  # --- non-stationary TS -------------------------------------------------
+  - name: ds-ts
+    selector:
+      class: asf.online.selectors.DiscountedTSSelector
+      params: {budget: "${stream.cutoff}", gamma: 0.99}
+
+  - name: sw-ts
+    selector:
+      class: asf.online.selectors.SlidingWindowTSSelector
+      params: {budget: "${stream.cutoff}", window: 100}
+
+  - name: fdsw-ts
+    selector:
+      class: asf.online.selectors.FDSWTSSelector
+      params: {budget: "${stream.cutoff}", gamma: 0.99, window: 30}
+
+  # --- clustered TS (DTS-OC) ---------------------------------------------
+  - name: dts-oc-5
+    selector:
+      class: asf.online.selectors.DTSOCSelector
+      params: {budget: "${stream.cutoff}", n_clusters: 5, gamma: 0.95}
+
+  - name: dts-oc-10
+    selector:
+      class: asf.online.selectors.DTSOCSelector
+      params: {budget: "${stream.cutoff}", n_clusters: 10, gamma: 0.95}
