@@ -1,9 +1,11 @@
-# Example experiment: three methods on a synthetic stream with one sudden
-# covariate drift, under a warm and a cold protocol, 3 selector seeds each.
+# Example experiment: three methods on a toy ASlib stream with one sudden
+# covariate drift (toy_a, then toy_b), under a warm and a cold protocol,
+# 3 selector seeds each. Run from the repository root (the scenario root is
+# relative to the working directory).
 #
-#   python -m oas_experiments.list configs/example_synthetic_sudden.yaml
-#   python -m oas_experiments.run  configs/example_synthetic_sudden.yaml --run-id <id>
-name: example_synthetic_sudden          # results/<name>/<run_id>/
+#   python -m oas_experiments.list configs/example_toy_sudden.yaml
+#   python -m oas_experiments.run  configs/example_toy_sudden.yaml --run-id <id>
+name: example_toy_sudden          # results/<name>/<run_id>/
 
 evaluation:
   par_factor: 10.0
@@ -17,18 +19,14 @@ protocols:
 
 streams:
   - name: sudden
-    kind: synthetic_scenario            # asf.online.streams.make_synthetic_scenario
-    seeds: [0]                          # stream seeds -> random_state of the generator
+    kind: aslib
+    seeds: [0]                          # stream seeds -> shuffling within each scenario
     params:
-      kind: sudden_covariate
-      n_instances: 400
-      n_features: 3
-      n_algorithms: 3
-      breakpoints: [250]                # step 150 under warm100, step 250 under cold
-      shift_strength: 3.0
-      cutoff: 100.0
-      feature_noise: 0.3
-      performance_noise: 0.1
+      root: tests/fixtures/aslib        # made by tests/fixtures/make_toy_aslib.py
+      scenarios: [toy_a, toy_b]         # 250 + 150 instances, cutoff 100
+    drift:
+      builder: grouped
+      params: {schedule: [toy_a, toy_b]}   # drift at 250: step 150 under warm100, step 250 under cold
 
 methods:
   - name: static-pairwise

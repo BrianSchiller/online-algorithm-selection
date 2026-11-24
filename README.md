@@ -57,17 +57,17 @@ For final runs, skip the last line; see [Final runs](#final-runs).
    (format below).
 2. **List its runs**:
    ```
-   python -m oas_experiments.list configs/example_synthetic_sudden.yaml
+   python -m oas_experiments.list configs/example_toy_sudden.yaml
    ```
 3. **Run them**, one process per run. A single run:
    ```
-   python -m oas_experiments.run configs/example_synthetic_sudden.yaml --run-id sudden-s0__cold__ds-ts__seed0
+   python -m oas_experiments.run configs/example_toy_sudden.yaml --run-id sudden-s0__cold__ds-ts__seed0
    ```
    or every run without a result, several at a time (on a laptop or
    workstation; see [On a cluster](#on-a-cluster) for SLURM):
    ```
-   python -m oas_experiments.launch configs/example_synthetic_sudden.yaml --jobs 8
-   python -m oas_experiments.launch configs/example_synthetic_sudden.yaml --jobs 8 --match "*__cold__*"
+   python -m oas_experiments.launch configs/example_toy_sudden.yaml --jobs 8
+   python -m oas_experiments.launch configs/example_toy_sudden.yaml --jobs 8 --match "*__cold__*"
    ```
    The result goes to `results/<experiment>/<run id>/`. Use `--results-dir`
    or the environment variable `OAS_RESULTS_DIR` for another location.
@@ -80,7 +80,7 @@ For final runs, skip the last line; see [Final runs](#final-runs).
    ```python
    from oas_experiments.results import load_experiment
 
-   results = load_experiment("results/example_synthetic_sudden")
+   results = load_experiment("results/example_toy_sudden")
    results.runs  # one row per run
    results.steps  # one row per run and step
    ```
@@ -120,7 +120,7 @@ stays valid while results arrive.
 ## Config format
 
 A config is a grid: streams × stream seeds × protocols × methods × selector
-seeds. See `configs/example_synthetic_sudden.yaml` for a complete file.
+seeds. See `configs/example_toy_sudden.yaml` for a complete file.
 
 ```yaml
 name: my_experiment            # results/<name>/
@@ -137,7 +137,7 @@ protocols:
 
 streams:
   - name: sudden
-    kind: synthetic_scenario   # see "Stream kinds"
+    kind: aslib                # see "Stream kinds"
     seeds: [0]                 # stream seeds (default [0])
     params: {...}              # passed to the stream kind
 
@@ -202,11 +202,9 @@ of a cost-versus-quality curve can be grouped.
 
 | kind | builds | seed goes to |
 | --- | --- | --- |
-| `synthetic_scenario` | `asf.online.streams.make_synthetic_scenario(**params)` | `random_state` |
-| `synthetic` | `asf.online.streams.make_synthetic_stream` from `regimes`, `phases`, `performance_model`, `cutoff` and further keyword arguments | `random_state` |
 | `aslib` | one or more ASlib scenarios (`root`, `scenarios`), ordered by the `drift` block; without one, in random order | sampling and shuffling |
 
-The synthetic kinds reject a `drift` block. For `aslib` it chooses how the
+For `aslib` the `drift` block chooses how the
 instances are ordered (see `configs/example_sat12_switching.yaml` and ASF's
 `docs/features/stream_construction.md`):
 

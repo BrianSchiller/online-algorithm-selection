@@ -1,0 +1,25 @@
+scenario_id: toy_b
+performance_measures:
+- runtime
+maximize:
+- false
+performance_type:
+- runtime
+algorithm_cutoff_time: 100.0
+algorithm_cutoff_memory: '?'
+features_cutoff_time: '?'
+features_cutoff_memory: '?'
+features_deterministic: &id001
+- f0
+- f1
+- f2
+features_stochastic: []
+algorithms_deterministic:
+- a0
+- a1
+- a2
+algorithms_stochastic: []
+number_of_feature_steps: 1
+feature_steps:
+  base:
+    provides: *id001

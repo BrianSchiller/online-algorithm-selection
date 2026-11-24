@@ -5,8 +5,9 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-EXAMPLE_CONFIG = REPO_ROOT / "configs" / "example_synthetic_sudden.yaml"
+EXAMPLE_CONFIG = REPO_ROOT / "configs" / "example_toy_sudden.yaml"
 FIXTURE_RESULTS = Path(__file__).resolve().parent / "fixtures" / "results"
+TOY_ASLIB = Path(__file__).resolve().parent / "fixtures" / "aslib"
 
 
 @pytest.fixture
@@ -22,13 +23,12 @@ def minimal_config() -> dict:
         "streams": [
             {
                 "name": "sudden",
-                "kind": "synthetic_scenario",
+                "kind": "aslib",
                 "seeds": [0],
-                "params": {
-                    "kind": "sudden_covariate",
-                    "n_instances": 80,
-                    "min_segment_length": 20,
-                    "cutoff": 100.0,
+                "params": {"root": str(TOY_ASLIB), "scenarios": ["toy_a", "toy_b"]},
+                "drift": {
+                    "builder": "grouped",
+                    "params": {"schedule": ["toy_a", "toy_b"], "segment_length": 40},
                 },
             }
         ],

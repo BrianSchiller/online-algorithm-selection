@@ -141,7 +141,7 @@ def test_load_config_reports_the_file(tmp_path):
 
 def test_example_config_expands_to_15_runs():
     cfg = load_config(EXAMPLE_CONFIG)
-    assert cfg.name == "example_synthetic_sudden"
+    assert cfg.name == "example_toy_sudden"
     assert len(cfg.runs) == 15
     by_method: dict[str, set[str]] = {}
     for run in cfg.runs:

@@ -7,9 +7,10 @@ protocols:
   - {name: cold, type: cold}
 streams:
   - name: sudden
-    kind: synthetic_scenario
+    kind: aslib
     seeds: [0]
-    params: {kind: sudden_covariate, n_instances: 40, breakpoints: [25], min_segment_length: 10, cutoff: 100.0}
+    params: {root: tests/fixtures/aslib, scenarios: [toy_a, toy_b]}
+    drift: {builder: grouped, params: {schedule: [toy_a, toy_b], segment_length: [25, 15]}}
 methods:
   - name: static
     protocols: [warm10]

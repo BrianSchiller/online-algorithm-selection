@@ -1,5 +1,4 @@
 {
-  "schema_version": 1,
   "asf": {
     "version": "0.1.8",
     "commit": "0000000000000000000000000000000000000000",
@@ -12,6 +11,7 @@
       "random_state": 1
     }
   },
+  "protocol": "cold",
   "stream": {
     "name": "sudden",
     "seed": 0,
@@ -29,24 +29,18 @@
     ],
     "transition_intervals": []
   },
-  "protocol": "cold",
   "n_warmstart": 0,
   "seed": 1,
   "result_mode": "best_of_scheduled",
   "par_factor": 10.0,
-  "maximize": false,
   "sbs_algorithm_stream": "a1",
   "sbs_algorithm_warmstart": null,
-  "retrain_steps": [],
-  "drift_steps": [],
-  "retrain_seconds": 0.0,
-  "created_utc": "2026-11-12T15:00:00Z",
   "extra": {
     "experiment": {
       "name": "fixture_exp",
       "run_id": "sudden-s0__cold__ds-ts__seed1",
       "config_file": "fixture_exp.yaml",
-      "config_hash": "9691d82b364f96936acc7004cfd55ca6e8990a01d4b4f28c5818140b05e6869b"
+      "config_hash": "cfbed57dc6e5e8d1e55b11895928b6abfaba36654e7c822de4a20b32957a6dd8"
     },
     "run": {
       "experiment": "fixture_exp",
@@ -63,18 +57,28 @@
       },
       "stream": {
         "name": "sudden",
-        "kind": "synthetic_scenario",
+        "kind": "aslib",
         "seed": 0,
         "params": {
-          "kind": "sudden_covariate",
-          "n_instances": 40,
-          "breakpoints": [
-            25
-          ],
-          "min_segment_length": 10,
-          "cutoff": 100.0
+          "root": "tests/fixtures/aslib",
+          "scenarios": [
+            "toy_a",
+            "toy_b"
+          ]
         },
-        "drift": null
+        "drift": {
+          "builder": "grouped",
+          "params": {
+            "schedule": [
+              "toy_a",
+              "toy_b"
+            ],
+            "segment_length": [
+              25,
+              15
+            ]
+          }
+        }
       },
       "protocol": {
         "name": "cold",
@@ -99,5 +103,11 @@
       "platform": "fixture",
       "packages": {}
     }
-  }
+  },
+  "schema_version": 1,
+  "maximize": false,
+  "retrain_steps": [],
+  "drift_steps": [],
+  "retrain_seconds": 0.0,
+  "created_utc": "2026-11-24T10:41:28Z"
 }

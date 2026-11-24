@@ -38,57 +38,6 @@ def stream_kind(name: str) -> Callable[[StreamBuilder], StreamBuilder]:
     return register
 
 
-def _no_drift_block(kind: str, drift: dict[str, Any] | None) -> None:
-    if drift is not None:
-        raise ValueError(
-            f"Stream kind {kind!r} constructs its own drift; remove the `drift` block."
-        )
-
-
-@stream_kind("synthetic_scenario")
-def _synthetic_scenario(
-    params: dict[str, Any], seed: int, drift: dict[str, Any] | None
-) -> InstanceStream:
-    """``asf.online.streams.make_synthetic_scenario(**params, random_state=seed)``."""
-    from asf.online.streams import make_synthetic_scenario
-
-    _no_drift_block("synthetic_scenario", drift)
-    return make_synthetic_scenario(**params, random_state=seed)
-
-
-@stream_kind("synthetic")
-def _synthetic(
-    params: dict[str, Any], seed: int, drift: dict[str, Any] | None
-) -> InstanceStream:
-    """``asf.online.streams.make_synthetic_stream`` with explicit regimes and phases.
-
-    ``regimes`` maps a name to ``{mean, scale}``, ``phases`` is a list of
-    ``{regime, length, transition_length}`` and ``performance_model`` is
-    ``{intercepts, coefficients}``; all other keys are passed through.
-    """
-    from asf.online.streams import (
-        FeatureRegime,
-        PerformanceModelConfig,
-        StreamPhase,
-        make_synthetic_stream,
-    )
-
-    _no_drift_block("synthetic", drift)
-    rest = dict(params)
-    try:
-        regimes = {k: FeatureRegime(**v) for k, v in rest.pop("regimes").items()}
-        phases = [StreamPhase(**p) for p in rest.pop("phases")]
-        model = PerformanceModelConfig(**rest.pop("performance_model"))
-        cutoff = rest.pop("cutoff")
-    except KeyError as exc:
-        raise ValueError(
-            f"Stream kind 'synthetic' needs the parameter {exc}."
-        ) from None
-    return make_synthetic_stream(
-        regimes, phases, model, cutoff, random_state=seed, **rest
-    )
-
-
 @stream_kind("aslib")
 def _aslib(
     params: dict[str, Any], seed: int, drift: dict[str, Any] | None

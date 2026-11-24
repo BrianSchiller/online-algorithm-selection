@@ -1,6 +1,6 @@
 """Collect the results of an experiment into DataFrames.
 
-    results = load_experiment("results/example_synthetic_sudden")
+    results = load_experiment("results/example_toy_sudden")
     results.runs    # one row per run: config columns, summary metrics, totals
     results.steps   # one row per run and step: the per-step frame plus run_id
 

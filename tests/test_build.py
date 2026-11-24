@@ -90,36 +90,6 @@ def test_stream_seed_controls_the_stream(minimal_config):
     assert not s0.features.equals(s1.features)
 
 
-def test_explicit_synthetic_stream(minimal_config):
-    minimal_config["streams"][0] = {
-        "name": "explicit",
-        "kind": "synthetic",
-        "params": {
-            "regimes": {"A": {"mean": [0.0, 0.0]}, "B": {"mean": [2.0, 0.0]}},
-            "phases": [
-                {"regime": "A", "length": 30},
-                {"regime": "B", "length": 30, "transition_length": 10},
-            ],
-            "performance_model": {
-                "intercepts": [1.0, 1.2],
-                "coefficients": [[0.5, -0.5], [0.0, 0.0]],
-            },
-            "cutoff": 50.0,
-            "performance_noise": 0.1,
-        },
-    }
-    stream = build_stream(parse_config(minimal_config).runs[0])
-    assert len(stream) == 60
-    assert stream.drift_points == (30,)
-    assert stream.transition_intervals == ((30, 40),)
-
-
-def test_synthetic_streams_reject_a_drift_block(minimal_config):
-    minimal_config["streams"][0]["drift"] = {"builder": "abrupt_drift"}
-    with pytest.raises(ValueError, match="remove the `drift` block"):
-        build_stream(parse_config(minimal_config).runs[0])
-
-
 def test_type_with_params_is_a_partial():
     from sklearn.ensemble import RandomForestClassifier
 

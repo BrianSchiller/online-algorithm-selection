@@ -51,7 +51,7 @@ def test_runs_frame_has_one_row_per_run_with_config_columns():
     assert row["selector_class"] == "asf.online.selectors.OnlinePairwiseSelector"
     assert (row["stream"], row["stream_kind"], row["stream_seed"]) == (
         "sudden",
-        "synthetic_scenario",
+        "aslib",
         0,
     )
     assert (row["protocol"], row["n_warmstart"], row["seed"]) == ("cold", 0, 0)
