@@ -10,6 +10,7 @@ from oas_experiments.analysis.metrics import (
     CONFIG_COLUMNS,
     DRIFT_COLUMNS,
     METRICS,
+    _not_recovered,
     add_step_metrics,
     aggregate,
     aggregate_curves,
@@ -23,14 +24,19 @@ from oas_experiments.results import load_experiment
 ROOK = "sudden-s0__cold__rook__seed0"
 
 
-def _steps(run_id, regret, n_runs=None):
+def _steps(run_id, regret, n_runs=None, gap=10.0, vbs_cost=0.0, maximize=False):
+    """Steps with the given regret and gap ``sbs_cost - vbs_cost`` (both
+    flipped when maximising)."""
     n = len(regret)
+    sign = -1.0 if maximize else 1.0
+    vbs = np.broadcast_to(np.asarray(vbs_cost, float), n)
     return pd.DataFrame(
         {
             "run_id": run_id,
             "step": np.arange(n),
-            "user_cost": np.asarray(regret, float),
-            "vbs_cost": 0.0,
+            "user_cost": vbs + sign * np.asarray(regret, float),
+            "vbs_cost": vbs,
+            "sbs_cost": vbs + sign * np.broadcast_to(np.asarray(gap, float), n),
             "n_runs": n_runs if n_runs is not None else 1,
             "compute_cost": 1.0,
             "primary_runtime": 1.0,
@@ -40,22 +46,41 @@ def _steps(run_id, regret, n_runs=None):
     )
 
 
-def _runs(run_id, points, intervals=()):
+def _runs(run_id, points, intervals=(), maximize=False):
     return pd.DataFrame(
         {
             "run_id": [run_id],
-            "maximize": [False],
+            "maximize": [maximize],
             "drift_points": [list(points)],
             "transition_intervals": [[list(i) for i in intervals]],
         }
     )
 
 
-def _drift(regret, points, intervals=(), n_runs=None, window=2):
+def _drift(
+    regret,
+    points,
+    intervals=(),
+    n_runs=None,
+    window=2,
+    hold=2,
+    cap=0.1,
+    gap=10.0,
+    vbs_cost=0.0,
+    maximize=False,
+):
     out = drift_metrics(
-        _steps("r", regret, n_runs), _runs("r", points, intervals), window=window
+        _steps("r", regret, n_runs, gap, vbs_cost, maximize),
+        _runs("r", points, intervals, maximize),
+        window=window,
+        hold=hold,
+        cap=cap,
     )
     return out.set_index("drift_point")
+
+
+def _n_not_recovered(drift, window=2, hold=2):
+    return _not_recovered(drift.reset_index(), window, hold)
 
 
 @pytest.fixture(scope="module")
@@ -124,55 +149,128 @@ def test_rolling_stays_within_runs():
 # --- drift metrics --------------------------------------------------------
 
 
-def test_recovery_at_step_k():
-    row = _drift([1, 1, 1, 1, 5, 5, 3, 1, 1, 1, 1], [4]).loc[4]
-    # windows from step 4: 5, 4, 2, 1 -> back at 1 * 1.1 from step 7
-    assert row["pre_level"] == 1
-    assert row["recovery"] == 3
+# Window 2, tolerance 0.1, gap 10 per step unless set, so a window's closed
+# gap is 1 - (sum of its two regrets) / 20.
+
+
+def test_harder_segment_is_not_degradation():
+    # regret and gap both x4 after the drift: same closed gap 0.9 throughout
+    gap = [10] * 4 + [40] * 6
+    row = _drift([1, 1, 1, 1, 4, 4, 4, 4, 4, 4], [4], gap=gap).loc[4]
+    assert row["pre_gap"] == pytest.approx(0.9)
+    assert row["low_gap"] == pytest.approx(0.9)
+    assert row["peak_regret"] == 4
+    assert row["recovery"] == 0  # the raw-regret definition gave NaN here
+
+
+def test_degradation_then_recovery():
+    # windows a = 4..10: 0.5, 0.6, 0.7, 0.8, 0.9, 0.9, 0.9
+    # threshold 0.9 - 0.1 * (0.9 - 0.5) = 0.86; first s with G(s), G(s+2) >= 0.86: 8
+    regret = [1, 1, 1, 1, 5, 5, 3, 3, 1, 1, 1, 1]
+    row = _drift(regret, [4]).loc[4]
+    assert row["pre_gap"] == pytest.approx(0.9)
+    assert row["low_gap"] == pytest.approx(0.5)
     assert row["peak_regret"] == 5
-    assert (row["start"], row["end"]) == (4, 11)
+    assert row["recovery"] == 4
 
 
-def test_recovery_from_a_near_zero_level():
-    # level 0, peak 2: recovered once the window mean is at most 0.2
-    row = _drift([0, 0, 0, 0, 2, 2, 0.1, 0.1, 0.1], [4]).loc[4]
-    assert row["pre_level"] == 0 and row["peak_regret"] == 2
-    assert row["recovery"] == 2
+def test_cap_keeps_a_deep_drop_from_lowering_the_bar():
+    # windows a = 4..12: -2, -0.625, 0.75, 0.75, 0.75, 0.825, 0.9, 0.9, 0.9
+    # drop 2.9: uncapped threshold 0.9 - 0.29 = 0.61, capped 0.9 - 0.1 = 0.8
+    regret = [1, 1, 1, 1, 30, 30, 2.5, 2.5, 2.5, 2.5, 1, 1, 1, 1]
+    row = _drift(regret, [4]).loc[4]
+    assert row["low_gap"] == pytest.approx(-2)
+    assert row["recovery"] == 5  # s = 9: G(9) = 0.825, G(11) = 0.9
+    assert _drift(regret, [4], cap=np.inf).loc[4, "recovery"] == 2
 
 
-def test_no_jump_recovers_at_once():
-    row = _drift([2, 2, 2, 2, 1, 1, 1, 1], [4]).loc[4]
-    assert row["recovery"] == 0
+def test_one_lucky_window_does_not_hold():
+    # windows a = 4..12: 0.5, 0.7, 0.9, 0.7, 0.5, 0.5, 0.5, 0.5, 0.5
+    # only G(6) >= 0.86, and G(8) = 0.5 breaks the hold
+    regret = [1, 1, 1, 1, 5, 5, 1, 1, 5, 5, 5, 5, 5, 5]
+    out = _drift(regret, [4])
+    assert np.isnan(out.loc[4, "recovery"])
+    assert _n_not_recovered(out) == 1
+    single = _drift(regret, [4], hold=1)
+    assert single.loc[4, "recovery"] == 2
+    assert _n_not_recovered(single, hold=1) == 0
 
 
-def test_no_recovery_is_nan():
-    row = _drift([1, 1, 1, 1, 5, 5, 5, 5], [4]).loc[4]
-    assert np.isnan(row["recovery"]) and row["peak_regret"] == 5
+def test_zero_gap_windows_are_nan_and_break_a_hold():
+    # gap 0 on steps 4, 5: G(4) is NaN; G(5..8) = 0.9 = threshold
+    regret = [1, 1, 1, 1, 0, 0, 1, 1, 1, 1]
+    gap = [10, 10, 10, 10, 0, 0, 10, 10, 10, 10]
+    row = _drift(regret, [4], gap=gap).loc[4]
+    assert row["low_gap"] == pytest.approx(0.9)  # NaN windows ignored
+    assert row["recovery"] == 1  # s = 4 fails on the NaN window
+
+
+def test_zero_gap_everywhere_after_drift_is_not_recovered():
+    out = _drift([1] * 10, [4], gap=[10] * 4 + [0] * 6)
+    assert np.isnan(out.loc[4, "low_gap"]) and np.isnan(out.loc[4, "recovery"])
+    assert _n_not_recovered(out) == 1
+
+
+def test_zero_gap_before_drift_is_not_measurable():
+    out = _drift([1] * 10, [4], gap=[0] * 4 + [10] * 6)
+    assert np.isnan(out.loc[4, "pre_gap"]) and np.isnan(out.loc[4, "recovery"])
+    assert _n_not_recovered(out) == 0
+
+
+def test_segment_shorter_than_hold_windows_is_not_measurable():
+    # segment [4, 7) has 3 < hold * window = 4 steps
+    out = _drift([1, 1, 1, 1, 5, 5, 5, 1, 1, 1, 1], [4, 7])
+    assert np.isnan(out.loc[4, "recovery"])
+    assert out.loc[7, "recovery"] == 0
+    assert _n_not_recovered(out) == 0
+    # with hold=1 the segment is long enough, and the drop never recovers
+    assert (
+        _n_not_recovered(
+            _drift([1, 1, 1, 1, 5, 5, 5, 1, 1, 1, 1], [4, 7], hold=1), hold=1
+        )
+        == 1
+    )
+
+
+def test_drift_at_first_step():
+    out = _drift([5, 5, 1, 1, 1, 1], [0])
+    row = out.loc[0]
+    assert np.isnan(row["pre_gap"]) and np.isnan(row["recovery"])
+    assert np.isnan(row["extra_run_rate_before"])
+    assert row["peak_regret"] == 5
+    assert _n_not_recovered(out) == 0
 
 
 def test_recovery_searched_only_until_next_drift_point():
     out = _drift([1, 1, 1, 1, 5, 5, 5, 5, 1, 1, 1, 1], [4, 8])
-    assert np.isnan(out.loc[4, "recovery"])  # windows crossing step 8 not used
+    # [4, 8): all windows 0.5; windows crossing step 8 (G(7) = 0.7) not used
+    assert out.loc[4, "low_gap"] == pytest.approx(0.5)
+    assert np.isnan(out.loc[4, "recovery"])
     assert out.loc[4, "end"] == 8
-    assert out.loc[8, "pre_level"] == 5
+    assert out.loc[8, "pre_gap"] == pytest.approx(0.5)
     assert out.loc[8, "recovery"] == 0 and out.loc[8, "peak_regret"] == 1
-    assert out["drift_index"].tolist() == [0, 1]
-
-
-def test_drift_at_first_step():
-    row = _drift([5, 5, 1, 1], [0]).loc[0]
-    assert np.isnan(row["pre_level"]) and np.isnan(row["recovery"])
-    assert np.isnan(row["extra_run_rate_before"])
-    assert row["peak_regret"] == 5
+    assert _n_not_recovered(out) == 1
 
 
 def test_gradual_drift_measured_from_transition_end():
+    # windows a = 4..10: 0.6, 0.5, 0.6, 0.8, 0.9, 0.9, 0.9; threshold 0.86
     regret = [1, 1, 1, 1, 3, 5, 5, 3, 1, 1, 1, 1]
     gradual = _drift(regret, [4], intervals=[(4, 8)]).loc[4]
     assert gradual["start"] == 8
     assert gradual["recovery"] == 0
-    assert gradual["peak_regret"] == 5  # peak counted from the drift point
+    assert gradual["low_gap"] == pytest.approx(0.5)  # trough counted from the drift
+    assert gradual["peak_regret"] == 5
     assert _drift(regret, [4]).loc[4, "recovery"] == 4
+
+
+def test_recovery_when_maximising():
+    # the degradation case with every cost difference flipped around vbs = 10
+    regret = [1, 1, 1, 1, 5, 5, 3, 3, 1, 1, 1, 1]
+    row = _drift(regret, [4], vbs_cost=10.0, maximize=True).loc[4]
+    assert row["pre_gap"] == pytest.approx(0.9)
+    assert row["low_gap"] == pytest.approx(0.5)
+    assert row["peak_regret"] == 5
+    assert row["recovery"] == 4
 
 
 def test_extra_run_rate_around_drift():

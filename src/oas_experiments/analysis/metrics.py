@@ -22,6 +22,8 @@ from scipy import stats
 
 WINDOW = 50
 TOLERANCE = 0.1
+HOLD = 2
+CAP = 0.1
 DETECTION_TOLERANCE = 100
 CONFIDENCE = 0.95
 GROUP = ("stream", "protocol", "method")
@@ -66,7 +68,8 @@ DRIFT_COLUMNS = [
     "drift_point",
     "start",
     "end",
-    "pre_level",
+    "pre_gap",
+    "low_gap",
     "peak_regret",
     "recovery",
     "extra_run_rate_before",
@@ -141,16 +144,34 @@ def _mean(values: np.ndarray) -> float:
     return float(values.mean()) if len(values) else float("nan")
 
 
+def _window_gaps(
+    regret: np.ndarray, gap: np.ndarray, starts: np.ndarray, width: int
+) -> np.ndarray:
+    """Closed gap ``1 - sum(regret) / sum(gap)`` of the windows
+    ``[a, a + width)`` for every ``a`` in ``starts``; NaN where the gap sum is
+    ``<= 0`` (the SBS is optimal on the whole window)."""
+    r = np.concatenate([[0.0], np.cumsum(regret)])
+    d = np.concatenate([[0.0], np.cumsum(gap)])
+    starts = np.asarray(starts, int)
+    stops = np.minimum(starts + width, len(regret))
+    r_sum, d_sum = r[stops] - r[starts], d[stops] - d[starts]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return np.where(d_sum > 0, 1 - r_sum / d_sum, np.nan)
+
+
 def _drift_row(
     regret: np.ndarray,
+    gap: np.ndarray,
     extra: np.ndarray,
     point: int,
     start: int,
     end: int,
     window: int,
     tolerance: float,
+    hold: int,
+    cap: float,
 ) -> dict[str, float]:
-    level = _mean(regret[max(point - window, 0) : point])
+    nan = float("nan")
     segment = regret[point:end]
     # means[i] = mean regret over steps point+i .. point+i+window-1
     means = (
@@ -158,16 +179,33 @@ def _drift_row(
         if len(segment) >= window
         else np.empty(0)
     )
-    peak = float(means.max()) if len(means) else float("nan")
-    # Recovered once at most `tolerance` of the jump above the pre-drift level
-    # is left; without a jump (peak <= level) that is the level itself.
-    threshold = level + tolerance * max(peak - level, 0.0)
-    hits = np.flatnonzero(means[start - point :] <= threshold)
+    peak = float(means.max()) if len(means) else nan
+    lo = max(point - window, 0)
+    pre = float(_window_gaps(regret, gap, [lo], point - lo)[0]) if point > 0 else nan
+    # closed gap of every full window [a, a + window) with point <= a, a + window <= end
+    gaps = _window_gaps(regret, gap, np.arange(point, end - window + 1), window)
+    low = float(np.nanmin(gaps)) if np.isfinite(gaps).any() else nan
+    recovery = nan
+    if not np.isnan(pre) and end - start >= hold * window:
+        # Recovered once at most `tolerance` of the drop below the pre-drift
+        # closed gap is left, but never more than `cap` below it (the
+        # pre-drift gap itself if there is no drop), for `hold` consecutive
+        # non-overlapping windows.
+        drop = max(pre - low, 0.0) if not np.isnan(low) else 0.0
+        threshold = pre - min(tolerance * drop, cap)
+        ok = gaps[start - point :] >= threshold  # NaN windows never pass
+        n = end - start - hold * window + 1
+        held = np.logical_and.reduce(
+            [ok[k * window : k * window + n] for k in range(hold)]
+        )
+        hits = np.flatnonzero(held)
+        recovery = float(hits[0]) if hits.size else nan
     return {
-        "pre_level": level,
+        "pre_gap": pre,
+        "low_gap": low,
         "peak_regret": peak,
-        "recovery": float(hits[0]) if hits.size else float("nan"),
-        "extra_run_rate_before": _mean(extra[max(point - window, 0) : point]),
+        "recovery": recovery,
+        "extra_run_rate_before": _mean(extra[lo:point]),
         "extra_run_rate_after": _mean(extra[point : min(point + window, end)]),
     }
 
@@ -177,38 +215,53 @@ def drift_metrics(
     runs: pd.DataFrame,
     window: int = WINDOW,
     tolerance: float = TOLERANCE,
+    hold: int = HOLD,
+    cap: float = CAP,
 ) -> pd.DataFrame:
-    """Recovery, peak regret and extra-run rates around every drift point.
+    """Recovery of the closed gap, peak regret and extra-run rates around
+    every drift point.
+
+    Per step, ``r = user_cost - vbs_cost`` (the ``regret``) and
+    ``d = sbs_cost - vbs_cost`` (signs flipped when maximising; the SBS of the
+    whole stream). The closed gap of a window ``[a, b)`` is
+    ``G(a, b) = 1 - sum(r[a:b]) / sum(d[a:b])``, NaN if ``sum(d[a:b]) <= 0``.
 
     For a drift point ``p`` with segment end ``end`` (the next drift point or
     the end of the stream) and ``start`` (``p``, or the end of the transition
     interval that begins at ``p`` for gradual drift):
 
-    - ``pre_level``: mean regret over the steps ``[p - window, p)`` (fewer at
-      the start of the stream, NaN if there are none).
+    - ``pre_gap``: ``G(max(p - window, 0), p)``; NaN at ``p = 0``.
+    - ``low_gap``: smallest non-NaN ``G(a, a + window)`` over full windows
+      with ``p <= a`` and ``a + window <= end``.
     - ``peak_regret``: largest mean regret of a full window inside
       ``[p, end)``.
-    - ``recovery``: ``s - start`` for the first ``s >= start`` whose window
-      ``[s, s + window)`` lies inside the segment and has mean regret at most
-      ``pre_level + tolerance * (peak_regret - pre_level)``, i.e. all but
-      ``tolerance`` of the jump is gone (the level itself if there is no
-      jump). This is the trailing rolling regret at step ``s + window - 1``.
-      0 means no visible degradation, NaN means never recovered, or not
-      measurable (no ``pre_level``, or the segment is shorter than
-      ``window``).
+    - ``recovery``: ``s - start`` for the first ``s >= start`` such that the
+      ``hold`` consecutive non-overlapping windows ``[s + k * window,
+      s + (k + 1) * window)`` lie inside ``[start, end)``, are not NaN and all
+      have ``G >= pre_gap - min(tolerance * max(pre_gap - low_gap, 0), cap)``,
+      i.e. all but ``tolerance`` of the drop is gone, and the closed gap is at
+      most ``cap`` below ``pre_gap``, and it stays there. 0 means no visible
+      degradation. NaN means not recovered, or not measurable (``pre_gap`` is
+      NaN, or ``[start, end)`` is shorter than ``hold * window``).
     - ``extra_run_rate_before`` / ``_after``: share of steps with more than
       one run in ``[p - window, p)`` and ``[p, min(p + window, end))``.
 
     Parameters
     ----------
     steps
-        Per-step frame; ``regret`` is added if missing.
+        Per-step frame with ``sbs_cost``; ``regret`` is added if missing.
     runs
-        Run frame with ``drift_points`` and ``transition_intervals``.
+        Run frame with ``maximize``, ``drift_points`` and
+        ``transition_intervals``.
     window
         Window length in steps for all windows above.
     tolerance
-        Share of the jump above the pre-drift level that may remain.
+        Share of the drop below the pre-drift closed gap that may remain.
+    hold
+        Number of consecutive windows that must stay recovered.
+    cap
+        Largest distance below ``pre_gap`` that still counts as recovered, so
+        a deep drop does not lower the bar by much (closed-gap units).
 
     Returns
     -------
@@ -220,6 +273,7 @@ def drift_metrics(
     if "regret" not in steps:
         steps = add_step_metrics(steps, runs)
     by_run = dict(tuple(steps.groupby("run_id", sort=False)))
+    maximize = runs.set_index("run_id")["maximize"]
     rows = []
     for run_id, points, intervals in zip(
         runs["run_id"],
@@ -231,6 +285,8 @@ def drift_metrics(
             continue
         run = by_run[run_id]
         regret = run["regret"].to_numpy(float)
+        sign = -1.0 if maximize[run_id] else 1.0
+        gap = sign * (run["sbs_cost"] - run["vbs_cost"]).to_numpy(float)
         extra = (run["n_runs"] > 1).to_numpy(float)
         transition_end = {a: b for a, b in intervals}
         for i, (point, end) in enumerate(
@@ -244,7 +300,18 @@ def drift_metrics(
                     "drift_point": point,
                     "start": start,
                     "end": end,
-                    **_drift_row(regret, extra, point, start, end, window, tolerance),
+                    **_drift_row(
+                        regret,
+                        gap,
+                        extra,
+                        point,
+                        start,
+                        end,
+                        window,
+                        tolerance,
+                        hold,
+                        cap,
+                    ),
                 }
             )
     return pd.DataFrame(rows, columns=DRIFT_COLUMNS)
@@ -269,6 +336,8 @@ def run_table(
     window: int = WINDOW,
     tolerance: float = TOLERANCE,
     detection_tolerance: int = DETECTION_TOLERANCE,
+    hold: int = HOLD,
+    cap: float = CAP,
 ) -> pd.DataFrame:
     """One row per run: config columns, ``uses_detector``, :data:`METRICS`, ``param.*``.
 
@@ -280,14 +349,15 @@ def run_table(
     ``overhead_seconds`` are totals of the step metrics, ``mean_recovery``
     averages the drift points that recovered and ``n_not_recovered`` counts the
     others (drift points where recovery cannot be measured, e.g. a drift at
-    the first evaluated step, count as neither); ``mean_peak_regret``
+    the first evaluated step or a segment shorter than ``hold`` windows, count
+    as neither); ``mean_peak_regret``
     averages all drift points. Detection metrics
     are recomputed with ``detection_tolerance`` (ASF's ``detection_metrics``).
     Drift metrics are NaN for runs without drift points.
     """
     steps = add_step_metrics(steps, runs)
     indexed = runs.set_index("run_id")
-    drift = drift_metrics(steps, runs, window, tolerance).groupby("run_id")
+    drift = drift_metrics(steps, runs, window, tolerance, hold, cap).groupby("run_id")
     derived = pd.DataFrame(
         {
             "closed_gap": indexed["closed_gap"],
@@ -307,8 +377,8 @@ def run_table(
     )
     derived["mean_recovery"] = drift["recovery"].mean()
     derived["mean_peak_regret"] = drift["peak_regret"].mean()
-    derived["n_not_recovered"] = drift[["pre_level", "peak_regret", "recovery"]].apply(
-        _not_recovered
+    derived["n_not_recovered"] = drift[["pre_gap", "start", "end", "recovery"]].apply(
+        _not_recovered, window=window, hold=hold
     )
     config = [c for c in CONFIG_COLUMNS if c in runs]
     params = [c for c in runs if c.startswith("param.")]
@@ -323,9 +393,12 @@ def run_table(
     )
 
 
-def _not_recovered(drift: pd.DataFrame) -> int:
-    """Drift points with a measurable recovery that never recovered."""
-    measurable = drift["pre_level"].notna() & drift["peak_regret"].notna()
+def _not_recovered(drift: pd.DataFrame, window: int, hold: int) -> int:
+    """Drift points with a measurable recovery that never recovered: a
+    ``pre_gap`` and a segment ``[start, end)`` of at least ``hold`` windows."""
+    measurable = drift["pre_gap"].notna() & (
+        drift["end"] - drift["start"] >= hold * window
+    )
     return int((measurable & drift["recovery"].isna()).sum())
 
 
@@ -438,7 +511,7 @@ def segment_labels(drift: dict | None, n_segments: int) -> list[str]:
     """Names of the segments between drift points.
 
     Taken from the ``schedule`` of a ``grouped`` drift block (a mixing entry
-    ``[A, B]`` reads ``A→B``). A warm start can swallow the first entries, so
+    ``[A, B]`` reads ``A+B``). A warm start can swallow the first entries, so
     the last ``n_segments`` entries are used. Otherwise ``S1 .. Sn``.
     """
     drift = drift if isinstance(drift, dict) else {}  # None or NaN from a frame
@@ -446,7 +519,7 @@ def segment_labels(drift: dict | None, n_segments: int) -> list[str]:
     if drift.get("builder") == "grouped" and schedule:
         if len(schedule) >= n_segments:
             return [
-                "→".join(map(str, e)) if isinstance(e, list) else str(e)
+                "+".join(map(str, e)) if isinstance(e, list) else str(e)
                 for e in schedule[len(schedule) - n_segments :]
             ]
     return [f"S{i + 1}" for i in range(n_segments)]
